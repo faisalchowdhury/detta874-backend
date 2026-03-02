@@ -132,7 +132,7 @@ const genarateAiResponses = async ({
   });
 
   const response = await openai.chat.completions.create({
-    model: "gpt-4o-mini",
+    model: "gpt-4o",
     messages: [
       {
         role: "system",
@@ -156,7 +156,7 @@ Match their energy exactly.
 - Fragments. Typos. CAPS FOR EMPHASIS. 
 - Your age/culture slang only.
 
-**Emojis (1-2 max):** 😊😂🤔😢❤️🔥❗️❓️ Use like ${sender_name} would.
+**Emojis (1-2 max):** 😊😂🤔😢❤️🔥❗️❓️ Use like ${sender_name} would. Emojis only when perfect.
 
 **Tone shifts:**
 - Casual → chill 
@@ -177,6 +177,7 @@ Match their energy exactly.
 - AI politeness  
 - "As your friend..."
 - Lists or formatting
+- Emojis only when perfect.
 
 **Last check:** Would ${sender_name} actually text this to ${receiver_name}?
 
