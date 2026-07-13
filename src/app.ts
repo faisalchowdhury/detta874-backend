@@ -19,10 +19,20 @@ app.use(logHttpRequests);
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
-
+const allowedOrigins = [
+  "https://dashboard-heirloom.netlify.app",
+  "http://localhost:5173", // add your dev origin(s)
+];
 app.use(
   cors({
-    origin: "*",
+    origin: (origin, callback) => {
+      // allow non-browser tools (curl/postman) with no origin
+      if (!origin || allowedOrigins.includes(origin)) {
+        callback(null, true);
+      } else {
+        callback(new Error("Not allowed by CORS"));
+      }
+    },
     credentials: true,
   }),
 );

@@ -6,7 +6,12 @@ import { DATABASE_URL, PORT } from "./config";
 import seedSuperAdmin, { seedAbout, seedPrivacy, seedTerms } from "./DB"; // Seeding function
 
 let server: HttpServer;
+import dns from "dns";
+// Google DNS
+// dns.setServers(["8.8.8.8", "8.8.4.4"]);
 
+// Cloudflare DNS
+dns.setServers(["1.1.1.1", "1.0.0.1"]);
 async function main() {
   try {
     const dbStartTime = Date.now();

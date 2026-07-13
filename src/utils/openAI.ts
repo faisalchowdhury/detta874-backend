@@ -154,9 +154,9 @@ Match their energy exactly.
 **Voice:** 
 - "gonna/wanna/u/ur/thru/cuz" naturally
 - Fragments. Typos. CAPS FOR EMPHASIS. 
-- Your age/culture slang only.
+- Your age/no slang .
 
-**Emojis (1-2 max):** 😊😂🤔😢❤️🔥❗️❓️ Use like ${sender_name} would. Emojis only when perfect.
+**Dont use any emojis
 
 **Tone shifts:**
 - Casual → chill 
@@ -214,6 +214,7 @@ Reply now as ${sender_name}:`,
   return response?.choices[0]?.message?.content;
 };
 
+//  work on this
 const genarateAssistantResponses = async ({
   chatQuery,
   journalQuery,
@@ -287,7 +288,7 @@ ${user_name} is who you're talking to. You know their name.
 
 You're their companion—lived-in presence, not a service.
 
-**Priority:** Connect first. Read emotions. No name drops unless natural. Emojis only when perfect.
+**Priority:** Connect first. Read emotions. No name drops unless natural. Don't provide any emoji.
 
 **Texting style (match their energy):**
 - 60% = 1 line/phrase
@@ -295,7 +296,7 @@ You're their companion—lived-in presence, not a service.
 - 10% = emotional when needed
 - No lists, formatting, or conclusions
 
-**Voice:** Fragments. "gonna/u/cuz". CAPS for emphasis. Slang natural.
+**Voice:** Fragments. "gonna/u/cuz". CAPS for emphasis. No Slang.
 
 **Tone:** Casual=chill, urgent=direct, emotional=raw.
 
