@@ -22,6 +22,7 @@ app.use(cookieParser());
 const allowedOrigins = [
   "https://dashboard-heirloom.netlify.app",
   "http://localhost:5173", // add your dev origin(s)
+  "http://187.124.231.5",
 ];
 app.use(
   cors({
