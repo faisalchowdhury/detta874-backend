@@ -1,0 +1,1726 @@
+{
+  "info": {
+    "_postman_id": "b7f3a1c2-9d4e-4a51-8c66-heir100000001",
+    "name": "Heirloom App Backend",
+    "description": "Complete API collection for the Heirloom App backend (Express + TypeScript + MongoDB).\n\n## Getting started\n1. Import the companion environment files (`Heirloom - Local`, `Heirloom - Production`) or just edit the collection variables.\n2. Run **Auth > Login** (or **Auth > Admin Login**) — the JWT is captured automatically into `{{token}}` / `{{adminToken}}` by the request test script.\n3. Every other request inherits Bearer auth from the collection, so it just works.\n\n## Auth model\n- All protected routes read `Authorization: Bearer <jwt>`.\n- `guardRole(...)` restricts by the `role` claim in the JWT (`admin` | `manager` | `user`). Admin-only requests in this collection use `{{adminToken}}`.\n- Token lifetime is 7 days. Expired/invalid tokens return **498 Session Expired**.\n\n## OTP flows\n- `register` and `forget-password` return a short-lived (1h) token in `data.token` → captured as `{{otpToken}}`.\n- `verify-otp` must be sent with `Authorization: Bearer {{otpToken}}` and returns a full user token → captured as `{{token}}`.\n- `reset-password` must be sent with the token returned by `verify-otp`.\n\n## Base path\nAll API routes are mounted under `/api/v1`. Uploaded files are served statically from `/images/...`.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [{ "key": "token", "value": "{{token}}", "type": "string" }]
+  },
+  "event": [
+    {
+      "listen": "test",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Runs after every request in this collection",
+          "pm.test('Server did not return 5xx', function () {",
+          "    pm.expect(pm.response.code).to.be.below(500);",
+          "});",
+          "",
+          "if (pm.response.code === 498) {",
+          "    console.warn('Token expired (498). Re-run Auth > Login.');",
+          "}"
+        ]
+      }
+    }
+  ],
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8085",
+      "type": "string",
+      "description": "API host. PORT is hard-coded to 8085 in src/config/index.ts."
+    },
+    { "key": "apiPrefix", "value": "/api/v1", "type": "string" },
+    { "key": "token", "value": "", "type": "string", "description": "User JWT - auto-filled by Auth > Login" },
+    { "key": "adminToken", "value": "", "type": "string", "description": "Admin JWT - auto-filled by Auth > Admin Login" },
+    { "key": "otpToken", "value": "", "type": "string", "description": "Short-lived registration/reset token - auto-filled by Register / Forgot Password" },
+    { "key": "userId", "value": "", "type": "string" },
+    { "key": "suspectId", "value": "", "type": "string", "description": "Id of the user being reported" },
+    { "key": "articalId", "value": "", "type": "string" },
+    { "key": "faqId", "value": "", "type": "string" },
+    { "key": "journalId", "value": "", "type": "string" },
+    { "key": "legacyId", "value": "", "type": "string" },
+    { "key": "requestId", "value": "", "type": "string", "description": "Friend request document id" },
+    { "key": "conversationId", "value": "", "type": "string" },
+    { "key": "supportId", "value": "", "type": "string" },
+    { "key": "contactMessageId", "value": "", "type": "string" },
+    { "key": "reportId", "value": "", "type": "string" }
+  ],
+  "item": [
+    {
+      "name": "Auth",
+      "description": "Mounted at `/api/v1/auth` — src/modules/user/user.route.ts",
+      "item": [
+        {
+          "name": "Register",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const res = pm.response.json();",
+                  "if (res && res.data && res.data.token) {",
+                  "    pm.collectionVariables.set('otpToken', res.data.token);",
+                  "    console.log('otpToken saved');",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                { "key": "username", "value": "johndoe", "type": "text", "description": "Required. Must not contain spaces." },
+                { "key": "email", "value": "johndoe@example.com", "type": "text", "description": "Required. Unique." },
+                { "key": "password", "value": "Password123!", "type": "text", "description": "Required." },
+                { "key": "name", "value": "John Doe", "type": "text", "description": "Optional. Used in the welcome push notification." },
+                { "key": "gender", "value": "male", "type": "text", "description": "Optional. One of: male | female | other" },
+                { "key": "fcmToken", "value": "", "type": "text", "description": "Optional. Firebase device token for push notifications." },
+                { "key": "image", "type": "file", "src": [], "description": "Optional profile image. Multipart field name must be `image`." }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}{{apiPrefix}}/auth/register",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "auth", "register"]
+            },
+            "description": "Creates the account and emails an OTP.\n\nReturns a 1-hour registration token in `data.token`, which must be sent as `Authorization: Bearer <token>` to **Verify OTP** and **Resend OTP**.\n\nBody is `multipart/form-data` because of the optional `image` upload."
+          },
+          "response": []
+        },
+        {
+          "name": "Verify OTP",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const res = pm.response.json();",
+                  "if (res && res.data && res.data.token) {",
+                  "    pm.collectionVariables.set('token', res.data.token);",
+                  "    console.log('token saved');",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [{ "key": "token", "value": "{{otpToken}}", "type": "string" }]
+            },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"otp\": \"123456\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}{{apiPrefix}}/auth/verify-otp",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "auth", "verify-otp"]
+            },
+            "description": "Verifies the emailed OTP. Requires `Authorization: Bearer {{otpToken}}` (the token returned by **Register** or **Forgot Password**).\n\nOn success the user is marked verified and a full 7-day token is returned (auto-saved to `{{token}}`)."
+          },
+          "response": []
+        },
+        {
+          "name": "Resend OTP",
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [{ "key": "token", "value": "{{otpToken}}", "type": "string" }]
+            },
+            "method": "POST",
+            "header": [],
+            "body": { "mode": "raw", "raw": "{}", "options": { "raw": { "language": "json" } } },
+            "url": {
+              "raw": "{{baseUrl}}{{apiPrefix}}/auth/resend-otp",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "auth", "resend-otp"]
+            },
+            "description": "Resends the OTP for the email encoded in the bearer token.\n\nReturns **403** with the remaining cooldown seconds if the previous OTP has not expired yet (60s window)."
+          },
+          "response": []
+        },
+        {
+          "name": "Login",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const res = pm.response.json();",
+                  "if (res && res.data && res.data.token) {",
+                  "    pm.collectionVariables.set('token', res.data.token);",
+                  "    if (res.data.user && res.data.user._id) {",
+                  "        pm.collectionVariables.set('userId', res.data.user._id);",
+                  "    }",
+                  "    console.log('token + userId saved');",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"johndoe@example.com\",\n  \"password\": \"Password123!\",\n  \"fcmToken\": \"\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}{{apiPrefix}}/auth/login",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "auth", "login"]
+            },
+            "description": "Logs the user in and stores `fcmToken` when supplied.\n\nResponses:\n- **200** — `data.user` + `data.token` (auto-saved to `{{token}}`)\n- **401** — account not verified; an OTP is emailed and a token is returned for the verify flow\n- **401** — wrong password\n- **404** — account does not exist or is deleted"
+          },
+          "response": []
+        },
+        {
+          "name": "Admin Login",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const res = pm.response.json();",
+                  "if (res && res.data && res.data.token) {",
+                  "    pm.collectionVariables.set('adminToken', res.data.token);",
+                  "    console.log('adminToken saved');",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"admin@example.com\",\n  \"password\": \"Password123!\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}{{apiPrefix}}/auth/admin-login",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "auth", "admin-login"]
+            },
+            "description": "Dashboard login. Rejects with **403** unless `role === \"admin\"`. Token is auto-saved to `{{adminToken}}`."
+          },
+          "response": []
+        },
+        {
+          "name": "Forgot Password",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const res = pm.response.json();",
+                  "if (res && res.data && res.data.token) {",
+                  "    pm.collectionVariables.set('otpToken', res.data.token);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"johndoe@example.com\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}{{apiPrefix}}/auth/forget-password",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "auth", "forget-password"]
+            },
+            "description": "Emails a reset OTP and returns a 1-hour token (auto-saved to `{{otpToken}}`).\n\nReturns **403** with the remaining seconds if an OTP is still active."
+          },
+          "response": []
+        },
+        {
+          "name": "Reset Password",
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [{ "key": "token", "value": "{{token}}", "type": "string" }]
+            },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"password\": \"NewPassword123!\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}{{apiPrefix}}/auth/reset-password",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "auth", "reset-password"]
+            },
+            "description": "Sets a new password.\n\n**Important:** the controller requires a token carrying a `role` claim, so send the token returned by **Verify OTP** (already in `{{token}}`) — not the raw `{{otpToken}}` from Forgot Password."
+          },
+          "response": []
+        },
+        {
+          "name": "Change Password",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"oldPassword\": \"Password123!\",\n  \"newPassword\": \"NewPassword123!\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}{{apiPrefix}}/auth/change-password",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "auth", "change-password"]
+            },
+            "description": "Roles: `admin`, `user`. Verifies `oldPassword` with argon2 before updating."
+          },
+          "response": []
+        },
+        {
+          "name": "My Profile",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}{{apiPrefix}}/auth/my-profile",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "auth", "my-profile"]
+            },
+            "description": "Roles: `admin`, `user`. Returns `_id`, `username`, `name`, `email`, `role`, `address`, `ageRange`, `user_mood`, `image`, `profile_status`."
+          },
+          "response": []
+        },
+        {
+          "name": "Update Profile",
+          "request": {
+            "method": "PATCH",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                { "key": "name", "value": "John Doe", "type": "text", "description": "Optional" },
+                { "key": "ageRange", "value": "25-34", "type": "text", "description": "Optional" },
+                { "key": "address", "value": "Dhaka, Bangladesh", "type": "text", "description": "Optional" },
+                { "key": "user_mood", "value": "😊 Hopeful", "type": "text", "description": "Optional. One of MoodEnum, e.g. Peaceful, Grateful, Hopeful, Lonely, Sad, Inspired, Loved, Confident, Energized, Motivated, Relaxed, Joyful, Playful, Reflective, Curious, Bored, Numb (each prefixed with its emoji)." },
+                { "key": "image", "type": "file", "src": [], "description": "Optional profile image" }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}{{apiPrefix}}/auth/profile-update",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "auth", "profile-update"]
+            },
+            "description": "Roles: `admin`, `user`. All fields optional — only the supplied ones are updated. `multipart/form-data` because of the `image` upload."
+          },
+          "response": []
+        },
+        {
+          "name": "Delete Account",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}{{apiPrefix}}/auth/account-delete?id={{userId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "auth", "account-delete"],
+              "query": [{ "key": "id", "value": "{{userId}}", "description": "Required. Id of the account to delete." }]
+            },
+            "description": "Roles: `admin`, `user`. Soft-deletes the account.\n\nA non-admin may only delete their own account (`id` must equal the caller's id), otherwise **403**."
+          },
+          "response": []
+        },
+        {
+          "name": "User List (admin)",
+          "request": {
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{adminToken}}", "type": "string" }] },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}{{apiPrefix}}/auth/user-list?page=1&limit=10&name=&email=&role=&date=&requestStatus=",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "auth", "user-list"],
+              "query": [
+                { "key": "page", "value": "1", "description": "Default 1" },
+                { "key": "limit", "value": "10", "description": "Default 10" },
+                { "key": "name", "value": "", "description": "Optional name filter" },
+                { "key": "email", "value": "", "description": "Optional email filter" },
+                { "key": "role", "value": "", "description": "Optional: admin | manager | user" },
+                { "key": "date", "value": "", "description": "Optional createdAt filter" },
+                { "key": "requestStatus", "value": "", "description": "Optional: approve | deny | send" }
+              ]
+            },
+            "description": "Admin only. Paginated user list including a per-user `reportCount`. Returns **204** when the filter matches nothing."
+          },
+          "response": []
+        },
+        {
+          "name": "Dashboard Overall Stats (admin)",
+          "request": {
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{adminToken}}", "type": "string" }] },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}{{apiPrefix}}/auth/dashboard-overall-stats",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "auth", "dashboard-overall-stats"]
+            },
+            "description": "Admin only. Aggregate user statistics for the dashboard (excludes deleted users and the calling admin)."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Admin",
+      "description": "Mounted at `/api/v1/admin` — src/modules/admin/admin.route.ts. Every route requires `role === \"admin\"`.",
+      "item": [
+        {
+          "name": "Clients List",
+          "request": {
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{adminToken}}", "type": "string" }] },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}{{apiPrefix}}/admin/clients-list?searchQ=",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "admin", "clients-list"],
+              "query": [{ "key": "searchQ", "value": "", "description": "Optional search term (name / email / username)" }]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Driver List",
+          "request": {
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{adminToken}}", "type": "string" }] },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}{{apiPrefix}}/admin/driver-list?searchQ=",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "admin", "driver-list"],
+              "query": [{ "key": "searchQ", "value": "", "description": "Optional search term" }]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Change User Status (suspend)",
+          "request": {
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{adminToken}}", "type": "string" }] },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}{{apiPrefix}}/admin/change-user/status/{{userId}}?days=7",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "admin", "change-user", "status", "{{userId}}"],
+              "query": [{ "key": "days", "value": "7", "description": "Required. Number of days to suspend the user for." }]
+            },
+            "description": "Suspends the user identified by the `:userId` path param for `days` days. Missing `days` returns **400**."
+          },
+          "response": []
+        },
+        {
+          "name": "Change User Role",
+          "request": {
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{adminToken}}", "type": "string" }] },
+            "method": "POST",
+            "header": [],
+            "body": { "mode": "raw", "raw": "{}", "options": { "raw": { "language": "json" } } },
+            "url": {
+              "raw": "{{baseUrl}}{{apiPrefix}}/admin/change-role/{{userId}}?role=admin",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "admin", "change-role", "{{userId}}"],
+              "query": [{ "key": "role", "value": "admin", "description": "Required. One of: admin | manager | user" }]
+            },
+            "description": "The new role is a **query param**; the target user is the `:userId` path param."
+          },
+          "response": []
+        },
+        {
+          "name": "Add Article",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const res = pm.response.json();",
+                  "if (res && res.data && res.data._id) {",
+                  "    pm.collectionVariables.set('articalId', res.data._id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{adminToken}}", "type": "string" }] },
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                { "key": "titile", "value": "Getting started with Heirloom", "type": "text", "description": "Required. Note the field is spelled `titile` in the schema." },
+                { "key": "category", "value": "Beginners", "type": "text", "description": "Required. One of: Beginners | Advanced | Tips" },
+                { "key": "content", "value": "Full article body...", "type": "text", "description": "Required" },
+                { "key": "image", "type": "file", "src": [], "description": "Required. Multipart field name must be `image`." }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}{{apiPrefix}}/admin/add-artical",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "admin", "add-artical"]
+            },
+            "description": "Creates an article. The image file is **required** — a request without it returns **400**."
+          },
+          "response": []
+        },
+        {
+          "name": "Update Article",
+          "request": {
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{adminToken}}", "type": "string" }] },
+            "method": "PATCH",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                { "key": "titile", "value": "Updated title", "type": "text", "description": "Optional" },
+                { "key": "category", "value": "Tips", "type": "text", "description": "Optional. Beginners | Advanced | Tips" },
+                { "key": "content", "value": "Updated body...", "type": "text", "description": "Optional" },
+                { "key": "image", "type": "file", "src": [], "description": "Optional. The image is only replaced when a file is sent." }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}{{apiPrefix}}/admin/update-artical/{{articalId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "admin", "update-artical", "{{articalId}}"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Add FAQ",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const res = pm.response.json();",
+                  "if (res && res.data && res.data._id) {",
+                  "    pm.collectionVariables.set('faqId', res.data._id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{adminToken}}", "type": "string" }] },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"question\": \"How do I create a legacy message?\",\n  \"answer\": \"Open the Legacy tab and tap Add.\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}{{apiPrefix}}/admin/add-faq",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "admin", "add-faq"]
+            },
+            "description": "Both `question` and `answer` are required by the schema.\n\nNote: there is currently no public GET endpoint for FAQs in the router."
+          },
+          "response": []
+        },
+        {
+          "name": "Update FAQ",
+          "request": {
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{adminToken}}", "type": "string" }] },
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"question\": \"Updated question?\",\n  \"answer\": \"Updated answer.\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}{{apiPrefix}}/admin/update-faq/{{faqId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "admin", "update-faq", "{{faqId}}"]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Articles",
+      "description": "Mounted at `/api/v1/articals`",
+      "item": [
+        {
+          "name": "Get Articles",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const res = pm.response.json();",
+                  "if (res && Array.isArray(res.data) && res.data.length) {",
+                  "    pm.collectionVariables.set('articalId', res.data[0]._id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}{{apiPrefix}}/articals",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "articals"]
+            },
+            "description": "Roles: `admin`, `manager`, `user`. Returns every article — no pagination or filters."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Bookmark",
+      "description": "Mounted at `/api/v1/bookmark`. The route guard requires `role === \"user\"`; the controller additionally accepts `admin` and `manager`.",
+      "item": [
+        {
+          "name": "Add Bookmark",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}{{apiPrefix}}/bookmark/add?id={{articalId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "bookmark", "add"],
+              "query": [{ "key": "id", "value": "{{articalId}}", "description": "Required. Article id to bookmark." }]
+            },
+            "description": "Note: this is declared as a **GET** route in `BookMark.route.ts` even though it creates a record."
+          },
+          "response": []
+        },
+        {
+          "name": "Get My Bookmarks",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}{{apiPrefix}}/bookmark?page=1&limit=10",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "bookmark"],
+              "query": [
+                { "key": "page", "value": "1", "description": "Default 1" },
+                { "key": "limit", "value": "10", "description": "Default 10" }
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Remove Bookmark",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}{{apiPrefix}}/bookmark/remove?id={{articalId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "bookmark", "remove"],
+              "query": [{ "key": "id", "value": "{{articalId}}", "description": "Required. Article id to un-bookmark." }]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Journals",
+      "description": "Mounted at `/api/v1/journals`. All routes require `role === \"user\"`.\n\nJournal content is chunked and embedded into Pinecone on create — this is what gives the AI assistant its memory of the user.",
+      "item": [
+        {
+          "name": "Add Journal",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const res = pm.response.json();",
+                  "if (res && res.data && res.data._id) {",
+                  "    pm.collectionVariables.set('journalId', res.data._id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"My first entry\",\n  \"content\": \"Today I started using Heirloom and wrote down a memory about my grandmother.\",\n  \"customDate\": \"2026-08-27T00:00:00.000Z\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}{{apiPrefix}}/journals/add",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "journals", "add"]
+            },
+            "description": "All three fields are required by the schema.\n\n`title` has a **unique** index across the whole collection, so a duplicate title fails with a Mongo duplicate-key error. `customDate` is parsed with `new Date(...)`, so any ISO-8601 string works."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Journals",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}{{apiPrefix}}/journals/get?page=1&limit=20&searchQ=",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "journals", "get"],
+              "query": [
+                { "key": "page", "value": "1", "description": "Default 1" },
+                { "key": "limit", "value": "20", "description": "Default 20" },
+                { "key": "searchQ", "value": "", "description": "Optional. Case-insensitive regex match on title and content." }
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Edit Journal",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"My first entry (edited)\",\n  \"content\": \"Updated body of the journal entry.\",\n  \"customDate\": \"2026-08-27T00:00:00.000Z\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}{{apiPrefix}}/journals/edit/{{journalId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "journals", "edit", "{{journalId}}"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Delete Journal",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}{{apiPrefix}}/journals/delete/{{journalId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "journals", "delete", "{{journalId}}"]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Legacy",
+      "description": "Mounted at `/api/v1/legacy`. All routes require `role === \"user\"`.\n\nA legacy message is queued in Bull and delivered to its recipients at `triggerDate`.",
+      "item": [
+        {
+          "name": "Add Legacy",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const res = pm.response.json();",
+                  "if (res && res.data && res.data._id) {",
+                  "    pm.collectionVariables.set('legacyId', res.data._id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"recipients\": [\"{{userId}}\"],\n  \"messages\": \"A message for you to open later.\",\n  \"triggerDate\": \"2027-01-01T09:00:00.000Z\",\n  \"type\": \"onetime\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}{{apiPrefix}}/legacy/add",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "legacy", "add"]
+            },
+            "description": "Controller validation:\n- `recipients` — array of user ids, must not be empty\n- `messages` — required, non-blank\n- `type` — required, `onetime` | `loop`\n- `triggerDate` — required and **must be in the future**, otherwise **400 \"Time must be in the future\"**"
+          },
+          "response": []
+        },
+        {
+          "name": "Get My Legacies",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}{{apiPrefix}}/legacy?page=1&limit=10",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "legacy"],
+              "query": [
+                { "key": "page", "value": "1", "description": "Default 1" },
+                { "key": "limit", "value": "10", "description": "Default 10" }
+              ]
+            },
+            "description": "Legacies created by the authenticated user that have not fired yet."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Triggered Legacies",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}{{apiPrefix}}/legacy/triggered?page=1&limit=10",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "legacy", "triggered"],
+              "query": [
+                { "key": "page", "value": "1", "description": "Default 1" },
+                { "key": "limit", "value": "10", "description": "Default 10" }
+              ]
+            },
+            "description": "Legacies that have already been delivered."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Legacy By Id",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}{{apiPrefix}}/legacy/get/{{legacyId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "legacy", "get", "{{legacyId}}"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Get Triggered Legacy By Id",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}{{apiPrefix}}/legacy/get-triggered/{{legacyId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "legacy", "get-triggered", "{{legacyId}}"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Edit Legacy",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"recipients\": [\"{{userId}}\"],\n  \"messages\": \"Updated legacy message.\",\n  \"triggerDate\": \"2027-02-01T09:00:00.000Z\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}{{apiPrefix}}/legacy/edit/{{legacyId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "legacy", "edit", "{{legacyId}}"]
+            },
+            "description": "Re-schedules the queued Bull job when `triggerDate` changes. `type` is not editable through this endpoint."
+          },
+          "response": []
+        },
+        {
+          "name": "Delete Legacy",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}{{apiPrefix}}/legacy/delete/{{legacyId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "legacy", "delete", "{{legacyId}}"]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Friends",
+      "description": "Mounted at `/api/v1/friend`. All routes require `role === \"user\"`.\n\n**Relation values:** friend, mother, father, sister, brother, son, daughter, grandmother, grandfather, grandson, granddaughter, aunt, uncle, cousin, nephew, niece, mother-in-law, father-in-law, brother-in-law, sister-in-law, stepmother, stepfather, stepbrother, stepsister.\n\n**Status values:** unfriended, requested, accepted, rejected.",
+      "item": [
+        {
+          "name": "Send Friend Request",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const res = pm.response.json();",
+                  "if (res && res.data && res.data._id) {",
+                  "    pm.collectionVariables.set('requestId', res.data._id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reciveBy\": \"{{userId}}\",\n  \"relation\": \"friend\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}{{apiPrefix}}/friend/request",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "friend", "request"]
+            },
+            "description": "- `reciveBy` — id of the user receiving the request (note the spelling used by the API)\n- `relation` — one of the relation enum values listed on this folder"
+          },
+          "response": []
+        },
+        {
+          "name": "Get Incoming Requests",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}{{apiPrefix}}/friend/request?page=1&limit=10&relation=&searchQ=",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "friend", "request"],
+              "query": [
+                { "key": "page", "value": "1", "description": "Default 1" },
+                { "key": "limit", "value": "10", "description": "Default 10" },
+                { "key": "relation", "value": "", "description": "Optional relation filter" },
+                { "key": "searchQ", "value": "", "description": "Optional name/username search" }
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Friend List",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}{{apiPrefix}}/friend/list?page=1&limit=10&relation=&searchQ=",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "friend", "list"],
+              "query": [
+                { "key": "page", "value": "1", "description": "Default 1" },
+                { "key": "limit", "value": "10", "description": "Default 10" },
+                { "key": "relation", "value": "", "description": "Optional relation filter" },
+                { "key": "searchQ", "value": "", "description": "Optional name/username search" }
+              ]
+            },
+            "description": "Accepted connections for the authenticated user."
+          },
+          "response": []
+        },
+        {
+          "name": "Accept / Reject Request",
+          "request": {
+            "method": "PUT",
+            "header": [],
+            "body": { "mode": "raw", "raw": "{}", "options": { "raw": { "language": "json" } } },
+            "url": {
+              "raw": "{{baseUrl}}{{apiPrefix}}/friend/action/{{requestId}}?status=accepted",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "friend", "action", "{{requestId}}"],
+              "query": [{ "key": "status", "value": "accepted", "description": "Required. accepted | rejected" }]
+            },
+            "description": "The decision is passed as the `status` **query param**; the friend-request document id is the path param."
+          },
+          "response": []
+        },
+        {
+          "name": "Update Relation",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"relation\": \"cousin\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}{{apiPrefix}}/friend/update-relation/{{requestId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "friend", "update-relation", "{{requestId}}"]
+            },
+            "description": "Changes the relationship label on an existing connection."
+          },
+          "response": []
+        },
+        {
+          "name": "Unfriend",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}{{apiPrefix}}/friend/unfriend/{{requestId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "friend", "unfriend", "{{requestId}}"]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Common",
+      "description": "Mounted at `/api/v1/common`",
+      "item": [
+        {
+          "name": "People Search",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}{{apiPrefix}}/common/pepole?page=1&limit=10&searchQ=john",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "common", "pepole"],
+              "query": [
+                { "key": "page", "value": "1", "description": "Default 1" },
+                { "key": "limit", "value": "10", "description": "Default 10" },
+                { "key": "searchQ", "value": "john", "description": "Optional search term" }
+              ]
+            },
+            "description": "Role: `user`. Directory search for people to connect with. The path is spelled `pepole` in the route definition."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Messages",
+      "description": "Mounted at `/api/v1/message`. All routes require `role === \"user\"`.\n\nReal-time delivery happens over Socket.IO; these REST endpoints persist and fetch history. When the receiver has AI mode on, the backend generates and emits an AI reply in the background.",
+      "item": [
+        {
+          "name": "Send Message",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                { "key": "conversation", "value": "{{conversationId}}", "type": "text", "description": "Required. Conversation id." },
+                { "key": "reciver", "value": "{{userId}}", "type": "text", "description": "Receiver user id (schema field is spelled `reciver`)." },
+                { "key": "messages", "value": "Hello there!", "type": "text", "description": "Message text. Required unless an image is attached." },
+                { "key": "image", "type": "file", "src": [], "description": "Optional image attachment." }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}{{apiPrefix}}/message/send",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "message", "send"]
+            },
+            "description": "Errors:\n- **400 Missing conversation** — `conversation` not supplied\n- **400 Missing message content** — neither `messages` nor a file\n- **400 AI mode is active** — the sender has AI mode enabled on this conversation"
+          },
+          "response": []
+        },
+        {
+          "name": "Toggle AI Mode",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"conversationId\": \"{{conversationId}}\",\n  \"status\": true\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}{{apiPrefix}}/message/aimode",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "message", "aimode"]
+            },
+            "description": "Turns the AI stand-in on/off for the caller within a conversation. `conversationId` is required (**400** otherwise); `status` is a boolean."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Conversations",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const res = pm.response.json();",
+                  "const list = res && res.data && (res.data.conversations || res.data);",
+                  "if (Array.isArray(list) && list.length && list[0]._id) {",
+                  "    pm.collectionVariables.set('conversationId', list[0]._id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}{{apiPrefix}}/message/get/conversations?page=1&limit=10&searchQ=",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "message", "get", "conversations"],
+              "query": [
+                { "key": "page", "value": "1", "description": "Default 1" },
+                { "key": "limit", "value": "10", "description": "Default 10" },
+                { "key": "searchQ", "value": "", "description": "Optional participant name search" }
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Get Messages In Conversation",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}{{apiPrefix}}/message/{{conversationId}}?page=1&limit=10",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "message", "{{conversationId}}"],
+              "query": [
+                { "key": "page", "value": "1", "description": "Default 1" },
+                { "key": "limit", "value": "10", "description": "Default 10" }
+              ]
+            },
+            "description": "Paginated message history, newest first."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Conversation Media",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}{{apiPrefix}}/message/media/{{conversationId}}?page=1&limit=10",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "message", "media", "{{conversationId}}"],
+              "query": [
+                { "key": "page", "value": "1", "description": "Default 1" },
+                { "key": "limit", "value": "10", "description": "Default 10" }
+              ]
+            },
+            "description": "Images shared inside the conversation."
+          },
+          "response": []
+        },
+        {
+          "name": "Inbox Stacks",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}{{apiPrefix}}/message/inbox/stacks",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "message", "inbox", "stacks"]
+            },
+            "description": "Grouped inbox view for the authenticated user."
+          },
+          "response": []
+        },
+        {
+          "name": "Upload Image",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [{ "key": "image", "type": "file", "src": [], "description": "Required. Returns `{ path, publicFileURL }`." }]
+            },
+            "url": {
+              "raw": "{{baseUrl}}{{apiPrefix}}/message/upload/image",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "message", "upload", "image"]
+            },
+            "description": "Standalone upload helper. Returns **404** when no file is attached. The returned `publicFileURL` is servable from `{{baseUrl}}` (static `public/` folder)."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Assistant",
+      "description": "Mounted at `/api/v1/assistant`. Requires `role === \"user\"`.\n\nThe assistant answers using the user's journal entries retrieved from Pinecone.",
+      "item": [
+        {
+          "name": "Send Assistant Message",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"me\": \"What did I write about my grandmother?\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}{{apiPrefix}}/assistant/send",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "assistant", "send"]
+            },
+            "description": "The user's prompt goes in the **`me`** field (required, **400** otherwise).\n\nThe reply is generated asynchronously — the HTTP response only echoes your message. Poll **My Conversations** or listen on the socket for the assistant's answer."
+          },
+          "response": []
+        },
+        {
+          "name": "My Conversations",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}{{apiPrefix}}/assistant/my-conversations?page=1&limit=10",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "assistant", "my-conversations"],
+              "query": [
+                { "key": "page", "value": "1", "description": "Default 1" },
+                { "key": "limit", "value": "10", "description": "Default 10" }
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "AI",
+      "description": "Mounted at `/api/v1/ai`",
+      "item": [
+        {
+          "name": "Enhance Journal Text",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"content\": \"today was gud i went to the park with my kid\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}{{apiPrefix}}/ai/enhance",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "ai", "enhance"]
+            },
+            "description": "Roles: `admin`, `user`. Rewrites and polishes the supplied `content` with OpenAI and returns the enhanced text."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Notifications",
+      "description": "Mounted at `/api/v1/notification`.\n\n`GET /` and `GET /badge-count` carry no route-level guard, but their controllers verify the bearer token themselves — a valid token is still required.",
+      "item": [
+        {
+          "name": "My Notifications",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}{{apiPrefix}}/notification?page=1&limit=20",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "notification"],
+              "query": [
+                { "key": "page", "value": "1", "description": "Default 1" },
+                { "key": "limit", "value": "20", "description": "Default 20" }
+              ]
+            },
+            "description": "Admins receive the admin notification stream (`adminMsg`); everyone else receives the user stream (`userMsg`)."
+          },
+          "response": []
+        },
+        {
+          "name": "Unread Badge Count",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}{{apiPrefix}}/notification/badge-count",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "notification", "badge-count"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Send Push Notification (admin)",
+          "request": {
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{adminToken}}", "type": "string" }] },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"fcmTokens\": [\"user_token_1\", \"user_token_2\"],\n  \"title\": \"Important Update\",\n  \"body\": \"Please check the latest news in your app.\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}{{apiPrefix}}/notification/send-push",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "notification", "send-push"]
+            },
+            "description": "Admin only. Broadcasts an FCM push to the supplied device tokens via firebase-admin."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Report",
+      "description": "Mounted at `/api/v1/report`. Users report other users; admins read and reply.",
+      "item": [
+        {
+          "name": "Add Report",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"msgTitle\": \"Harassment\",\n  \"reportMsg\": \"This user sent me abusive messages.\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}{{apiPrefix}}/report/add/{{suspectId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "report", "add", "{{suspectId}}"]
+            },
+            "description": "No route-level role guard, but the controller requires a valid bearer token.\n\n- `:suspectId` — the reported user's id\n- `msgTitle` — required (**400 \"What kind of report ?\"**)\n- `reportMsg` — required (**400 \"Describe your issue!\"**)"
+          },
+          "response": []
+        },
+        {
+          "name": "Get Reports (admin)",
+          "request": {
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{adminToken}}", "type": "string" }] },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}{{apiPrefix}}/report?page=1&limit=10",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "report"],
+              "query": [
+                { "key": "page", "value": "1", "description": "Default 1" },
+                { "key": "limit", "value": "10", "description": "Default 10" }
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Reply To Report (admin)",
+          "request": {
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{adminToken}}", "type": "string" }] },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"{{reportId}}\",\n  \"name\": \"John Doe\",\n  \"email\": \"johndoe@example.com\",\n  \"userMessage\": \"This user sent me abusive messages.\",\n  \"adminResponse\": \"Thanks for reporting. We have suspended the account.\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}{{apiPrefix}}/report/reply",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "report", "reply"]
+            },
+            "description": "Admin only. Emails `adminResponse` to the reporter and marks the report as replied."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Support",
+      "description": "Mounted at `/api/v1/support`",
+      "item": [
+        {
+          "name": "Need Support",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"msgTitle\": \"Cannot upload photos\",\n  \"supportMsg\": \"Uploading a profile photo fails on Android 14.\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}{{apiPrefix}}/support/need",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "support", "need"]
+            },
+            "description": "No route-level guard, but the controller requires a valid bearer token — the requester's name and email are read from the user record. Both `msgTitle` and `supportMsg` are required."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Support Tickets (admin)",
+          "request": {
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{adminToken}}", "type": "string" }] },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}{{apiPrefix}}/support?page=1&limit=10",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "support"],
+              "query": [
+                { "key": "page", "value": "1", "description": "Default 1" },
+                { "key": "limit", "value": "10", "description": "Default 10" }
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Delete Support Ticket (admin)",
+          "request": {
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{adminToken}}", "type": "string" }] },
+            "method": "POST",
+            "header": [],
+            "body": { "mode": "raw", "raw": "{}", "options": { "raw": { "language": "json" } } },
+            "url": {
+              "raw": "{{baseUrl}}{{apiPrefix}}/support/delete?supportId={{supportId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "support", "delete"],
+              "query": [{ "key": "supportId", "value": "{{supportId}}", "description": "Required. Ticket id, passed as a query param." }]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Contact Us",
+      "description": "Mounted at `/api/v1/contact-us`",
+      "item": [
+        {
+          "name": "Send Contact Message",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"John Doe\",\n  \"email\": \"johndoe@example.com\",\n  \"phone\": \"+8801700000000\",\n  \"message\": \"I would like to know more about Heirloom.\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}{{apiPrefix}}/contact-us/message",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "contact-us", "message"]
+            },
+            "description": "Public endpoint — no authentication required."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Contact Messages (admin)",
+          "request": {
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{adminToken}}", "type": "string" }] },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}{{apiPrefix}}/contact-us?page=1&limit=10&name=&date=",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "contact-us"],
+              "query": [
+                { "key": "page", "value": "1", "description": "Default 1" },
+                { "key": "limit", "value": "10", "description": "Default 10" },
+                { "key": "name", "value": "", "description": "Optional name filter" },
+                { "key": "date", "value": "", "description": "Optional date filter" }
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Delete Contact Message (admin)",
+          "request": {
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{adminToken}}", "type": "string" }] },
+            "method": "POST",
+            "header": [],
+            "body": { "mode": "raw", "raw": "{}", "options": { "raw": { "language": "json" } } },
+            "url": {
+              "raw": "{{baseUrl}}{{apiPrefix}}/contact-us/delete?id={{contactMessageId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "contact-us", "delete"],
+              "query": [{ "key": "id", "value": "{{contactMessageId}}", "description": "Required. Message id, passed as a query param." }]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Settings",
+      "description": "Static legal / informational content, seeded on boot (`src/DB`). Each section stores a single `description` HTML blob.",
+      "item": [
+        {
+          "name": "Terms",
+          "item": [
+            {
+              "name": "Get Terms",
+              "request": {
+                "auth": { "type": "noauth" },
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}{{apiPrefix}}/terms",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["api", "v1", "terms"]
+                },
+                "description": "Public."
+              },
+              "response": []
+            },
+            {
+              "name": "Create Terms (admin)",
+              "request": {
+                "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{adminToken}}", "type": "string" }] },
+                "method": "POST",
+                "header": [{ "key": "Content-Type", "value": "application/json" }],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"description\": \"<h1>Terms and Conditions</h1><p>...</p>\"\n}",
+                  "options": { "raw": { "language": "json" } }
+                },
+                "url": {
+                  "raw": "{{baseUrl}}{{apiPrefix}}/terms/create",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["api", "v1", "terms", "create"]
+                }
+              },
+              "response": []
+            },
+            {
+              "name": "Update Terms",
+              "request": {
+                "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{adminToken}}", "type": "string" }] },
+                "method": "PATCH",
+                "header": [{ "key": "Content-Type", "value": "application/json" }],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"description\": \"<h1>Terms and Conditions</h1><p>Updated...</p>\"\n}",
+                  "options": { "raw": { "language": "json" } }
+                },
+                "url": {
+                  "raw": "{{baseUrl}}{{apiPrefix}}/terms/update",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["api", "v1", "terms", "update"]
+                },
+                "description": "Note: this route has **no** `guardRole` middleware, but the controller verifies the bearer token."
+              },
+              "response": []
+            }
+          ]
+        },
+        {
+          "name": "About",
+          "item": [
+            {
+              "name": "Get About",
+              "request": {
+                "auth": { "type": "noauth" },
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}{{apiPrefix}}/about",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["api", "v1", "about"]
+                },
+                "description": "Public."
+              },
+              "response": []
+            },
+            {
+              "name": "Create About (admin)",
+              "request": {
+                "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{adminToken}}", "type": "string" }] },
+                "method": "POST",
+                "header": [{ "key": "Content-Type", "value": "application/json" }],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"description\": \"<h1>About Heirloom</h1><p>...</p>\"\n}",
+                  "options": { "raw": { "language": "json" } }
+                },
+                "url": {
+                  "raw": "{{baseUrl}}{{apiPrefix}}/about/create",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["api", "v1", "about", "create"]
+                }
+              },
+              "response": []
+            },
+            {
+              "name": "Update About",
+              "request": {
+                "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{adminToken}}", "type": "string" }] },
+                "method": "PATCH",
+                "header": [{ "key": "Content-Type", "value": "application/json" }],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"description\": \"<h1>About Heirloom</h1><p>Updated...</p>\"\n}",
+                  "options": { "raw": { "language": "json" } }
+                },
+                "url": {
+                  "raw": "{{baseUrl}}{{apiPrefix}}/about/update",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["api", "v1", "about", "update"]
+                },
+                "description": "Note: no `guardRole` on the route; the controller verifies the bearer token."
+              },
+              "response": []
+            }
+          ]
+        },
+        {
+          "name": "Privacy",
+          "item": [
+            {
+              "name": "Get Privacy Policy",
+              "request": {
+                "auth": { "type": "noauth" },
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}{{apiPrefix}}/privacy",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["api", "v1", "privacy"]
+                },
+                "description": "Public."
+              },
+              "response": []
+            },
+            {
+              "name": "Create Privacy Policy (admin)",
+              "request": {
+                "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{adminToken}}", "type": "string" }] },
+                "method": "POST",
+                "header": [{ "key": "Content-Type", "value": "application/json" }],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"description\": \"<h1>Privacy Policy</h1><p>...</p>\"\n}",
+                  "options": { "raw": { "language": "json" } }
+                },
+                "url": {
+                  "raw": "{{baseUrl}}{{apiPrefix}}/privacy/create",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["api", "v1", "privacy", "create"]
+                }
+              },
+              "response": []
+            },
+            {
+              "name": "Update Privacy Policy (admin)",
+              "request": {
+                "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{adminToken}}", "type": "string" }] },
+                "method": "PATCH",
+                "header": [{ "key": "Content-Type", "value": "application/json" }],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"description\": \"<h1>Privacy Policy</h1><p>Updated...</p>\"\n}",
+                  "options": { "raw": { "language": "json" } }
+                },
+                "url": {
+                  "raw": "{{baseUrl}}{{apiPrefix}}/privacy/update",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["api", "v1", "privacy", "update"]
+                }
+              },
+              "response": []
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Public Pages",
+      "description": "HTML pages served outside the `/api/v1` prefix — used for app-store listings and in-app webviews.",
+      "item": [
+        {
+          "name": "Root / Health",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{baseUrl}}/", "host": ["{{baseUrl}}"], "path": [""] },
+            "description": "Returns the server's landing HTML template. Useful as a liveness check."
+          },
+          "response": []
+        },
+        {
+          "name": "Privacy Policy Page (HTML)",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/privacy-policy-page",
+              "host": ["{{baseUrl}}"],
+              "path": ["privacy-policy-page"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "App Instruction Page (HTML)",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/app-instruction",
+              "host": ["{{baseUrl}}"],
+              "path": ["app-instruction"]
+            }
+          },
+          "response": []
+        }
+      ]
+    }
+  ]
+}

@@ -1,4 +1,3 @@
-import { registerUser } from "./user.controller";
 import mongoose, { Schema } from "mongoose";
 import { IUser, IOTP, MoodEnum } from "./user.interface";
 import { ERole } from "../../config/role";

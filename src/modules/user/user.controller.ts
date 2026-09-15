@@ -60,62 +60,61 @@ export const registerUser = catchAsync(async (req: Request, res: Response) => {
       "Username should not contain spaces",
     );
   }
-  // Validate that the role is provided; if not, throw an error.
+
+  // Pre-validate unique username to avoid background failures and race conditions
+  const isUsernameTaken = await UserModel.findOne({
+    username: username?.toLowerCase(),
+  });
+  if (isUsernameTaken) {
+    throw new ApiError(
+      httpStatus.CONFLICT,
+      "Username is already taken. Please choose another username.",
+    );
+  }
+
   // Call the service to register the user, which returns an OTP.
   const { otp } = await registerUserService(username, email, password);
-  // Generate a token for the registration process.
-  const token = generateRegisterToken({ email });
-  // Immediately send a response back to the client.
-  // This reduces the API response time.
-  sendResponse(res, {
-    statusCode: httpStatus.OK,
-    success: true,
-    message: "OTP sent to your email. Please verify to continue registration.",
-    data: { token: token },
+
+  // Hash the provided password.
+  const hashedPassword = await hashPassword(password);
+  
+  let image: any = {
+    path: "",
+    publicFileURL: "",
+  };
+  if (req.file) {
+    const imagePath = `public\\images\\${req.file.filename}`;
+    const publicFileURL = `/images/${req.file.filename}`;
+    image = {
+      path: imagePath,
+      publicFileURL: publicFileURL,
+    };
+  }
+
+  // Create a new user account with the hashed password and other details.
+  const { createdUser } = await createUser({
+    username,
+    email,
+    gender,
+    image,
+    hashedPassword,
+    fcmToken,
   });
 
-  // Offload the remaining operations to a background asynchronous block.
+  // Save the OTP in the database with a 3-minute expiration.
+  await saveOTP(email, otp);
+
+  // Send the OTP email in the background (fire-and-forget, so it doesn't slow down the response, but safe since user and OTP are already created)
+  sendOTPEmailRegister(username, email, otp).catch((err) => {
+    console.error("Error sending registration OTP email:", err);
+  });
+
+  // Generate a token for the registration process.
+  const token = generateRegisterToken({ email });
+
+  // Offload supplementary post-creation tasks (notifications, push-notifications) to background.
   (async () => {
     try {
-      // Send the OTP email in the background.
-      await sendOTPEmailRegister(username, email, otp);
-      // Hash the provided password.
-      const hashedPassword = await hashPassword(password);
-      let image: any = {
-        path: "",
-        publicFileURL: "",
-      };
-      if (req.file) {
-        const imagePath = `public\\images\\${req.file.filename}`;
-        const publicFileURL = `/images/${req.file.filename}`;
-        image = {
-          path: imagePath,
-          publicFileURL: publicFileURL,
-        };
-      }
-      // Create a new user account with the hashed password and other details.
-      const { createdUser } = await createUser({
-        username,
-        email,
-        gender,
-        image,
-        hashedPassword,
-        fcmToken,
-      });
-
-      // Calculate OTP expiration (60 seconds from now)
-      const now = new Date();
-      const expiresAt = new Date(now.getTime() + 60 * 1000);
-      // Save or update the OTP in the database concurrently.
-      await Promise.all([
-        OTPModel.findOneAndUpdate(
-          { email },
-          { otp, expiresAt },
-          { upsert: true },
-        ),
-        saveOTP(email, otp),
-      ]);
-
       // --------> Emit notification <----------------
       // Convert the created user's id to a mongoose ObjectId type.
       const userObjectId = new mongoose.Types.ObjectId(
@@ -131,6 +130,7 @@ export const registerUser = catchAsync(async (req: Request, res: Response) => {
       // Emit the notification.
       await emitNotification(notificationPayload);
       // --------> End Emit notification <----------------
+
       // --------> Send push notification via FCM (if fcmToken is provided) <----------------
       if (fcmToken) {
         try {
@@ -154,10 +154,17 @@ export const registerUser = catchAsync(async (req: Request, res: Response) => {
       }
       // --------> End push notification <----------------
     } catch (backgroundError) {
-      // Log errors from background tasks so they don't affect the already sent response.
-      console.error("Error in background tasks:", backgroundError);
+      console.error("Error in post-registration background tasks:", backgroundError);
     }
   })();
+
+  // Send the final response to the client.
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "OTP sent to your email. Please verify to continue registration.",
+    data: { token: token },
+  });
 });
 
 export const resendOTP = catchAsync(async (req: Request, res: Response) => {
@@ -395,7 +402,7 @@ export const verifyOTP = catchAsync(async (req: Request, res: Response) => {
       await user.save();
     }
   } catch (error: any) {
-    throw new ApiError(500, error.message || "Failed to verify otp");
+    throw new ApiError(error.statusCode || 500, error.message || "Failed to verify otp");
   }
 });
 
