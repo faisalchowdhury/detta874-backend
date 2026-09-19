@@ -7,6 +7,8 @@ import httpStatus from "http-status";
 import { OpenAIService } from "../../utils/openAI";
 import { chunkText } from "../user/user.utils";
 import { PineconeCollections } from "../../DB/pinecone";
+import { logger } from "../../logger/logger";
+import { AssistantMemoryIngest } from "../Assistant/assistantMemory.ingest";
 
 const addJournals = async (body: TJournals, userId: Types.ObjectId) => {
   const chunk = chunkText(body?.content, 300);
@@ -29,7 +31,16 @@ const addJournals = async (body: TJournals, userId: Types.ObjectId) => {
         id: `${result._id.toString()}-${index}`,
       });
     }),
-  );
+  ).catch((err) => logger.error("journal vector write failed", err));
+
+  // Also contribute this entry to the memory knowledge base the Companion
+  // reads from, tagged with its journal source (spec sections 7 and 20).
+  void AssistantMemoryIngest.ingestJournalEntry({
+    userId: userId.toString(),
+    journalId: result._id.toString(),
+    title: body.title,
+    content: body.content,
+  });
 
   return result;
 };
