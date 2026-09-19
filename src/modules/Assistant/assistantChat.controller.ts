@@ -18,7 +18,11 @@ const sendAssistantMessage = catchAsync(async (req: Request, res: Response) => {
   if (!userId) {
     throw new ApiError(httpStatus.BAD_REQUEST, "User ID is required");
   }
-  AssistantChatServices.sendAssistantMessage(myMessage, userId, user_name);
+  await AssistantChatServices.sendAssistantMessage(
+    myMessage,
+    userId,
+    user_name,
+  );
   sendResponse(res, {
     statusCode: httpStatus.OK,
     success: true,

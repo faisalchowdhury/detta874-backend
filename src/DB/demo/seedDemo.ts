@@ -9,9 +9,14 @@
  * article titles and emails defined in demoData.ts, so a reset never removes
  * anything else.
  *
- * Only MongoDB is seeded. Nothing is written to Pinecone, Redis or the Bull
- * queue, so AI replies won't recall demo journals and demo legacy messages are
- * never actually triggered.
+ * Demo journals are also ingested into the unified memory store (Mongo +
+ * Pinecone) and each demo user gets a learned style profile, so the Companion
+ * can actually recall demo journals. Pass --no-memory to skip that step and
+ * seed MongoDB only; it is the part that spends OpenAI credit.
+ *
+ * Nothing is written to Redis or the Bull queue, so demo legacy messages are
+ * never actually triggered. Short-term conversation windows are rebuilt from
+ * MongoDB on demand, and any left in Redis expire on their own.
  */
 import dns from "dns";
 import mongoose, { Model, Types } from "mongoose";
@@ -23,6 +28,12 @@ import { Conversations, Messages } from "../../modules/messages/messages.model";
 import { JournalsDB } from "../../modules/journals/journals.model";
 import { Legacys } from "../../modules/legacy/legacy.model";
 import { AssistantChats } from "../../modules/Assistant/assistantChat.model";
+import { AssistantMemories } from "../../modules/Assistant/assistantMemory.model";
+import { AssistantStyleProfiles } from "../../modules/Assistant/assistantStyle.model";
+import { AssistantMemoryIngest } from "../../modules/Assistant/assistantMemory.ingest";
+import { AssistantStyleService } from "../../modules/Assistant/assistantStyle.service";
+import { PineconeCollections } from "../pinecone";
+import { chunkText } from "../../modules/user/user.utils";
 import { NotificationModel } from "../../modules/notifications/notification.model";
 import reportModel from "../../modules/report/report.model";
 import supportModel from "../../modules/support/support.model";
@@ -80,6 +91,53 @@ const insertBackdated = async (
   return result.insertedCount;
 };
 
+/**
+ * Deletes the Pinecone vectors belonging to demo users. Failures are reported
+ * rather than thrown: a reset must still clear MongoDB even if Pinecone is
+ * unreachable or a vector is already gone.
+ */
+const removeDemoVectors = async (ids: Types.ObjectId[]) => {
+  if (!ids.length) return { memoryvectors: 0, journalvectors: 0 };
+
+  const [memoryRows, journalRows] = await Promise.all([
+    AssistantMemories.find({ user: { $in: ids } })
+      .select("_id")
+      .lean(),
+    JournalsDB.find({ user: { $in: ids } })
+      .select("_id content")
+      .lean(),
+  ]);
+
+  const memoryIds = memoryRows.map((row: any) => row._id.toString());
+  const journalChunkIds = journalRows.flatMap((row: any) =>
+    chunkText(row.content ?? "", 300).map(
+      (_chunk, index) => `${row._id.toString()}-${index}`,
+    ),
+  );
+
+  let memoryvectors = 0;
+  for (const id of memoryIds) {
+    try {
+      await PineconeCollections.deleteMemory(id);
+      memoryvectors += 1;
+    } catch (error) {
+      console.warn(`  could not delete memory vector ${id}:`, error);
+    }
+  }
+
+  let journalvectors = 0;
+  if (journalChunkIds.length) {
+    try {
+      await PineconeCollections.journalCollection.deleteMany(journalChunkIds);
+      journalvectors = journalChunkIds.length;
+    } catch (error) {
+      console.warn("  could not delete journal vectors:", error);
+    }
+  }
+
+  return { memoryvectors, journalvectors };
+};
+
 const removeDemoData = async () => {
   const users = await UserModel.find({ email: DEMO_EMAIL_REGEX })
     .select("_id")
@@ -90,6 +148,11 @@ const removeDemoData = async () => {
     .select("_id")
     .lean();
   const articleIds = demoArticles.map((article) => article._id);
+
+  // Vectors have to go before the rows that name them. Unified memory records
+  // are stored in Pinecone under their Mongo _id; journal chunks use
+  // `${journalId}-${chunkIndex}`, matching what journals.service writes.
+  const vectors = await removeDemoVectors(ids);
 
   const [
     messages,
@@ -128,10 +191,17 @@ const removeDemoData = async () => {
     ArticalsModel.deleteMany({ _id: { $in: articleIds } }),
     OTPModel.deleteMany({ email: DEMO_EMAIL_REGEX }),
   ]);
+  const [memoryCount, styleCount] = await Promise.all([
+    AssistantMemories.deleteMany({ user: { $in: ids } }),
+    AssistantStyleProfiles.deleteMany({ user: { $in: ids } }),
+  ]);
   const userCount = await UserModel.deleteMany({ _id: { $in: ids } });
 
   return {
     users: userCount.deletedCount,
+    memories: memoryCount.deletedCount,
+    styleprofiles: styleCount.deletedCount,
+    ...vectors,
     friends: friends.deletedCount,
     conversations: conversations.deletedCount,
     messages: messages.deletedCount,
@@ -511,6 +581,73 @@ const seedDemoData = async () => {
   };
 };
 
+/**
+ * Runs the real ingestion path over the seeded journals so demo users have
+ * retrievable long-term memory, and replays their own messages through the
+ * style learner so the adaptive profiles are not all sitting at neutral.
+ *
+ * Journals are ingested one at a time on purpose: each one does a
+ * de-duplication lookup against what is already stored, and running them
+ * concurrently would race those lookups against each other.
+ */
+const seedMemories = async () => {
+  const users = await UserModel.find({ email: DEMO_EMAIL_REGEX })
+    .select("_id")
+    .lean();
+  const ids = users.map((user: any) => user._id as Types.ObjectId);
+  if (!ids.length) return { memories: 0, styleprofiles: 0 };
+
+  const journalRows = await JournalsDB.find({ user: { $in: ids } })
+    .select("_id user title content")
+    .sort({ createdAt: 1 })
+    .lean();
+
+  process.stdout.write(`  ingesting ${journalRows.length} journals `);
+  for (const row of journalRows) {
+    await AssistantMemoryIngest.ingestJournalEntry({
+      userId: (row as any).user.toString(),
+      journalId: (row as any)._id.toString(),
+      title: (row as any).title,
+      content: (row as any).content,
+    });
+    process.stdout.write(".");
+  }
+  process.stdout.write("\n");
+
+  // Style evidence: the user's own companion turns and their sent messages.
+  const [ownTurns, sentMessages] = await Promise.all([
+    AssistantChats.find({ user: { $in: ids }, type: "me" })
+      .select("user message")
+      .sort({ createdAt: 1 })
+      .lean(),
+    Messages.find({ sender: { $in: ids } })
+      .select("sender messages")
+      .sort({ createdAt: 1 })
+      .lean(),
+  ]);
+
+  for (const turn of ownTurns) {
+    await AssistantStyleService.observeUserMessage(
+      (turn as any).user.toString(),
+      (turn as any).message,
+    );
+  }
+  for (const message of sentMessages) {
+    if ((message as any).messages) {
+      await AssistantStyleService.observeUserMessage(
+        (message as any).sender.toString(),
+        (message as any).messages,
+      );
+    }
+  }
+
+  const [memories, styleprofiles] = await Promise.all([
+    AssistantMemories.countDocuments({ user: { $in: ids } }),
+    AssistantStyleProfiles.countDocuments({ user: { $in: ids } }),
+  ]);
+  return { memories, styleprofiles };
+};
+
 const printLogins = () => {
   console.log(`\nDemo logins (password for all: ${DEMO_PASSWORD})`);
   console.table(
@@ -539,6 +676,15 @@ const main = async () => {
   try {
     console.log("\nInserted demo data:");
     console.table(await seedDemoData());
+
+    if (process.argv.includes("--no-memory")) {
+      console.log(
+        "\nSkipped memory seeding (--no-memory): the Companion will not recall demo journals.",
+      );
+    } else {
+      console.log("\nSeeding Companion memory:");
+      console.table(await seedMemories());
+    }
   } catch (error) {
     console.error(
       "\nSeeding stopped part-way. Run `npm run seed:demo:reset` to clean up.",

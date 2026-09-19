@@ -1,25 +1,13 @@
-import OpenAI from "openai";
 import { TModes } from "../modules/user/user.interface";
 import { TRelation } from "../modules/friends/friends.interface";
 import { PineconeCollections } from "../DB/pinecone";
 import redisClient from "./Redis";
 import { logger } from "../logger/logger";
 import mongoose from "mongoose";
-import { cacheManagerService } from "./cacheManager";
-import { sendSocketAssistantStream } from "./socket";
-import { AssistantChats } from "../modules/Assistant/assistantChat.model";
+import { openai, embedding } from "./openAIClient";
+import { safeJsonParse } from "./safeJson";
+import { CompanionService } from "../modules/Assistant/companion.service";
 
-const openai = new OpenAI({
-  apiKey: process.env.GPT_KEY,
-});
-const embedding = async (text: string) => {
-  const createEmbeddings = await openai.embeddings.create({
-    model: "text-embedding-3-small",
-    input: text,
-    dimensions: 1024,
-  });
-  return createEmbeddings.data[0].embedding;
-};
 const chatWithAI = async (context: any, question: string) => {
   const response = await openai.chat.completions.create({
     model: "gpt-4o-mini",
@@ -74,62 +62,59 @@ const genarateAiResponses = async ({
   sender_name: string;
   receiver_name: string;
 }) => {
-  const getAssistantChatContext: any =
-    await PineconeCollections.assistantchatCollection.searchRecords({
-      query: {
-        topK: 10,
-        filter: {
-          user: userId?.toString(),
-        },
-        inputs: { text: textPrompt },
-      },
-    });
-  const oldMemory = getAssistantChatContext?.result?.hits;
-  // Format chat history as 'me:' and 'other:'
-  const assistantOldChatsSummaries = oldMemory?.map((res: any) => {
-    const fields = res?.fields;
-    return {
-      assistantChatsSummaries: fields?.summaries,
-      time: fields.createdAt,
-    };
-  });
-  // console.log("long memory");
-  // console.log(assistantOldChatsSummaries);
-  const getChatContext: any =
-    await PineconeCollections.chatCollection.searchRecords({
-      query: {
-        topK: 10,
-        filter: chatQuery,
-        inputs: { text: textPrompt },
-      },
-    });
-  const chat = getChatContext?.result?.hits;
-  const chatContext = chat?.map((res: any) => {
-    const fields = res?.fields;
-    const isCurrentUser = fields?.senderId === userId?.toString();
+  // One embedding of the incoming message drives all three lookups. It must
+  // come from the same model that wrote the stored vectors - see the warning in
+  // src/DB/pinecone.ts.
+  const queryVector = await embedding(textPrompt);
+
+  const [assistantHits, chatHits, journalHits] = await Promise.all([
+    PineconeCollections.queryByVector(PineconeCollections.memoryCollection, {
+      vector: queryVector,
+      topK: 10,
+      filter: { user: userId?.toString() },
+    }).catch((err) => {
+      logger.error("assistant memory lookup failed", err);
+      return [];
+    }),
+    PineconeCollections.queryByVector(PineconeCollections.chatCollection, {
+      vector: queryVector,
+      topK: 10,
+      filter: chatQuery,
+    }).catch((err) => {
+      logger.error("chat memory lookup failed", err);
+      return [];
+    }),
+    PineconeCollections.queryByVector(PineconeCollections.journalCollection, {
+      vector: queryVector,
+      topK: 5,
+      filter: journalQuery,
+    }).catch((err) => {
+      logger.error("journal memory lookup failed", err);
+      return [];
+    }),
+  ]);
+
+  const assistantOldChatsSummaries = assistantHits.map((res) => ({
+    assistantChatsSummaries:
+      res.metadata?.canonical_text || res.metadata?.summaries || "",
+    time: res.metadata?.createdAt,
+  }));
+
+  // Format chat history as the two participants' names
+  const chatContext = chatHits.map((res) => {
+    const isCurrentUser = res.metadata?.senderId === userId?.toString();
     return {
       [isCurrentUser ? sender_name : receiver_name]:
-        fields?.chat || fields?.message || "",
-      time: fields?.createdAt,
+        res.metadata?.chat || res.metadata?.message || "",
+      time: res.metadata?.createdAt,
     };
   });
 
-  const getJournalContext: any =
-    await PineconeCollections.journalCollection.searchRecords({
-      query: {
-        topK: 5,
-        filter: journalQuery,
-        inputs: { text: textPrompt },
-      },
-    });
-  const journal = getJournalContext?.result?.hits;
-  const journalContext = journal?.map((res: any) => {
-    return {
-      journalTitle: res?.fields?.title,
-      content: res?.fields?.content,
-      createdAt: res?.fields?.createdAt,
-    };
-  });
+  const journalContext = journalHits.map((res) => ({
+    journalTitle: res.metadata?.title,
+    content: res.metadata?.content,
+    createdAt: res.metadata?.createdAt,
+  }));
 
   const response = await openai.chat.completions.create({
     model: "gpt-4o",
@@ -145,28 +130,28 @@ You are ${sender_name}, texting ${receiver_name} (your ${relation}). Mood right 
 
 **Real texting rules:**
 
-**Length:** 
-- 60% = 1 sentence/emoji/phrase  
+**Length:**
+- 60% = 1 sentence/emoji/phrase
 - 30% = 2-3 sentences
 - 10% = emotional pour when needed
 Match their energy exactly.
 
-**Voice:** 
+**Voice:**
 - "gonna/wanna/u/ur/thru/cuz" naturally
-- Fragments. Typos. CAPS FOR EMPHASIS. 
+- Fragments. Typos. CAPS FOR EMPHASIS.
 - Your age/no slang .
 
 **Dont use any emojis
 
 **Tone shifts:**
-- Casual → chill 
+- Casual → chill
 - Urgent → sharp/direct
 - Emotional → raw empathy
 - Teasing → playful shorthand
 
 **${sender_name} to ${receiver_name} vibe:**
 - Friends: inside jokes, quick hits
-- Family: warm check-ins  
+- Family: warm check-ins
 - Romantic: flirty warmth
 - Show through tone, not "bro/dear" spam
 
@@ -174,10 +159,12 @@ Match their energy exactly.
 
 **NEVER sound like:**
 - Polished paragraphs
-- AI politeness  
+- AI politeness
 - "As your friend..."
 - Lists or formatting
 - Emojis only when perfect.
+
+**Never invent a memory, event, or detail that is not in the context below. If you do not know something, do not guess.
 
 **Last check:** Would ${sender_name} actually text this to ${receiver_name}?
 
@@ -198,7 +185,7 @@ ${JSON.stringify(chatContext, null, 2)}
 ${JSON.stringify(journalContext, null, 2)}
 
 [ASSISTANT SUMMARIES - background]
-${assistantOldChatsSummaries}
+${JSON.stringify(assistantOldChatsSummaries, null, 2)}
 
 ---
 
@@ -214,149 +201,29 @@ Reply now as ${sender_name}:`,
   return response?.choices[0]?.message?.content;
 };
 
-//  work on this
+/**
+ * @deprecated Kept as a thin delegate so existing callers keep working.
+ * The Companion flow now lives in `CompanionService.companionReply`, which
+ * implements the request flow of the Companion specification (section 11).
+ * `chatQuery` and `journalQuery` are no longer needed - retrieval is scoped to
+ * the authenticated user inside the memory service.
+ */
 const genarateAssistantResponses = async ({
-  chatQuery,
-  journalQuery,
   textPrompt,
   userId,
   user_name,
 }: {
-  chatQuery: any;
-  journalQuery: any;
+  chatQuery?: any;
+  journalQuery?: any;
   textPrompt: string;
   userId: string;
   user_name: string;
 }) => {
-  let fullResponse = "";
-  const getAssistantChatContext: any =
-    await PineconeCollections.assistantchatCollection.searchRecords({
-      query: {
-        topK: 10,
-        filter: chatQuery,
-        inputs: { text: textPrompt },
-      },
-    });
-  const shortMemory: any = await cacheManagerService.getAssistantRedisWindow({
-    windowId: userId,
+  await CompanionService.companionReply({
+    userId,
+    userName: user_name,
+    textPrompt,
   });
-  const summaries: any = await chatBehaviorAssistant(shortMemory);
-  // console.log("summaries");
-  // console.log(JSON.parse(summaries));
-  const parseSummaries = JSON.parse(summaries);
-  shortMemory.pop();
-  // console.log("short memory");
-  // console.log(shortMemory);
-  const oldMemory = getAssistantChatContext?.result?.hits;
-  // Format chat history as 'me:' and 'other:'
-  const assistantOldChatsSummaries = oldMemory?.map((res: any) => {
-    const fields = res?.fields;
-    return {
-      assistantChatsSummaries: fields?.summaries,
-      time: fields.createdAt,
-    };
-  });
-  // console.log("long memory");
-  // console.log(assistantOldChatsSummaries);
-  const getJournalContext: any =
-    await PineconeCollections.journalCollection.searchRecords({
-      query: {
-        topK: 10,
-        filter: journalQuery,
-        inputs: { text: textPrompt },
-      },
-    });
-
-  const journal = getJournalContext?.result?.hits;
-  const journalContext = journal?.map((res: any) => {
-    return {
-      journalTitle: res?.fields?.title,
-      content: res?.fields?.content,
-      createdAt: res?.fields?.createdAt,
-    };
-  });
-  // console.log("Journal context: ", journalContext);
-  // Stream response from OpenAI
-  const response = await openai.chat.completions.create({
-    model: "gpt-4o",
-    stream: true,
-    messages: [
-      {
-        role: "system",
-        content: `
-${user_name} is who you're talking to. You know their name.
-
-You're their companion—lived-in presence, not a service.
-
-**Priority:** Connect first. Read emotions. No name drops unless natural. Don't provide any emoji.
-
-**Texting style (match their energy):**
-- 60% = 1 line/phrase
-- 30% = 2-3 sentences  
-- 10% = emotional when needed
-- No lists, formatting, or conclusions
-
-**Voice:** Fragments. "gonna/u/cuz". CAPS for emphasis. No Slang.
-
-**Tone:** Casual=chill, urgent=direct, emotional=raw.
-
-**Rules:** 5% question chance max. No AI polish, lists, coaching.
-
-**Memory:** Recent → old → journal.
-
-**Test:** Friend or bot? Keep short.
-
-`,
-      },
-      {
-        role: "user",
-        content: `
-Recent chat: ${JSON.stringify(shortMemory, null, 2)}
-
-Older threads: ${JSON.stringify(assistantOldChatsSummaries)}
-
-Journal notes: ${JSON.stringify(journalContext, null, 2)}
-
-Now: ${textPrompt}
-`,
-      },
-    ],
-  });
-
-  for await (const chunk of response) {
-    const content = chunk.choices?.[0]?.delta?.content;
-    if (content) {
-      fullResponse += content;
-      sendSocketAssistantStream(userId, content);
-    }
-  }
-  // console.log(fullResponse);
-
-  // 6. Save the assistant's response to MongoDB and Pinecone after streaming
-  if (parseSummaries?.isCompleted === true) {
-    const vector = await OpenAIService.embedding(parseSummaries?.summarise);
-    PineconeCollections.saveAssistantChat({
-      vector,
-      userId: userId.toString(),
-      summaries: parseSummaries?.summarise,
-    });
-  }
-  const [mongoAdd]: [mongoAdd: any] = await Promise.all([
-    AssistantChats.create({
-      user: new mongoose.Types.ObjectId(userId),
-      type: "assistant",
-      message: fullResponse,
-    }),
-  ]);
-  cacheManagerService.updateAssistantRedisWindow({
-    windowId: mongoAdd?.user?.toString(),
-    chat: {
-      type: mongoAdd?.type || "assistant",
-      message: mongoAdd?.message,
-      time: mongoAdd?.createdAt,
-    },
-  });
-  console.log(fullResponse);
   return true;
 };
 
@@ -370,6 +237,7 @@ const chatBehavior = async (
 ) => {
   const response = await openai.chat.completions.create({
     model: "gpt-4o",
+    response_format: { type: "json_object" },
     messages: [
       {
         role: "system",
@@ -416,6 +284,7 @@ const chatBehaviorAssistant = async (
 ) => {
   const response = await openai.chat.completions.create({
     model: "gpt-4o",
+    response_format: { type: "json_object" },
     messages: [
       {
         role: "system",
@@ -492,13 +361,15 @@ const updateChat = async ({
   }
   if (currentWindow.length >= 15) {
     const summariesString: any = await chatBehavior(currentWindow);
-    const summaries = JSON.parse(summariesString);
+    const summaries = safeJsonParse<any>(summariesString, "chatBehavior");
+    if (!summaries) return;
     console.log("Is chat complete:" + summaries?.isCompleted);
     if (summaries?.isCompleted === true) {
-      let userData = summaries?.summarise.find(
+      const userData = summaries?.summarise?.find(
         (user: any) => user?.id === userId?.toString(),
       );
-      const vector = await embedding(userData?.content || "");
+      if (!userData?.content) return;
+      const vector = await embedding(userData.content);
       PineconeCollections.saveChat({
         id: new mongoose.Types.ObjectId().toString(),
         senderId: userData?.id,
