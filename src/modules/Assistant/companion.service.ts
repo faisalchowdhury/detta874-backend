@@ -13,6 +13,8 @@ import { CompanionWindow, TStoredTurn } from "./companion.window";
 import { AssistantMemoryService } from "./assistantMemory.service";
 import { extractMemories } from "./assistantMemory.extraction";
 import { AssistantStyleService } from "./assistantStyle.service";
+import { detectProfileQuery } from "./relationship.lexicon";
+import { TwinIdentity, renderProfileFacts } from "./twin.identity";
 import { logCompanionRequest, logMemoryExtraction } from "./companion.trace";
 
 export const COMPANION_MODEL = process.env.COMPANION_MODEL || "gpt-4o";
@@ -165,14 +167,27 @@ const companionReply = async ({
   const recent = toTurns(storedTurns);
 
   // 4-6. Summary, memories scoped to this user, and the learned style profile.
-  const [summary, retrieved, styleProfile] = await Promise.all([
-    CompanionWindow.getSummary(userId),
-    AssistantMemoryService.retrieveMemories({
-      userId,
-      queryText: textPrompt,
-    }),
-    AssistantStyleService.getCompactProfile(userId),
-  ]);
+  const [summary, retrieved, styleProfile, structuredFacts] =
+    await Promise.all([
+      CompanionWindow.getSummary(userId),
+      AssistantMemoryService.retrieveMemories({
+        userId,
+        queryText: textPrompt,
+      }),
+      AssistantStyleService.getCompactProfile(userId),
+      // Relationship and profile questions are answered from a direct lookup,
+      // never from semantic similarity alone.
+      AssistantMemoryService.retrieveStructuredFacts({
+        userId,
+        queryText: textPrompt,
+      }),
+    ]);
+
+  // Account fields are authoritative for a direct question about them.
+  const profileAsked = detectProfileQuery(textPrompt);
+  const profileBlock = profileAsked.length
+    ? renderProfileFacts(await TwinIdentity.getProfileFacts(userId))
+    : null;
 
   const trace = {
     userId,
@@ -184,6 +199,8 @@ const companionReply = async ({
     summaryUpdatedAt: summary?.updated_at ?? null,
     memoryIds: retrieved.memories.map((m) => m.id),
     journalMemoryIds: retrieved.journal.map((m) => m.id),
+    structuredAsked: structuredFacts.asked,
+    structuredMatched: structuredFacts.matched.map((f) => f.id),
     startedAt,
     windowSource,
   };
@@ -199,6 +216,8 @@ const companionReply = async ({
       summary: summary?.text ?? null,
       memories: retrieved.memories,
       journalMemories: retrieved.journal,
+      structuredFacts,
+      profileBlock,
       currentMessage: textPrompt,
     });
 

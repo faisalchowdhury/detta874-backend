@@ -16,7 +16,6 @@ import {
 } from "../../utils/socket";
 import { checkAIMode } from "../../utils/checkAIMode";
 import { OpenAIService } from "../../utils/openAI";
-import { UserModel } from "../user/user.model";
 import { Messages } from "./messages.model";
 import { cacheManagerService } from "../../utils/cacheManager";
 import { formatConversationData } from "../../utils/formatted";
@@ -80,9 +79,8 @@ const sendMessage = catchAsync(async (req: Request, res: Response) => {
         );
 
         if (checkReciverMode) {
-          // console.log(receiverId);
-          const user =
-            await UserModel.findById(receiverId).select("user_mood name");
+          // The Twin loads the owner's own profile and mood itself, so there
+          // is no separate user lookup here any more.
           const recentMessage =
             await cacheManagerService.getUserRedisMessageWindow({
               windowId: conversation.toString(),
@@ -91,18 +89,20 @@ const sendMessage = catchAsync(async (req: Request, res: Response) => {
           // console.log(result?.message?.reciver);
 
           // console.log(receiverId);
+          // The Twin owner is the receiver (their AI mode is on); the speaker
+          // is whoever sent this message. Mood and relationship are resolved
+          // inside the Twin from the owner's own record, not passed in.
           const reply = await OpenAIService.genarateAiResponses({
             chatQuery: {
               conversationId: conversation.toString(),
             },
             recentMessage,
-            sender_name: result?.message?.reciver?.name,
-            receiver_name: result?.message?.sender?.name,
             journalQuery: { userId: receiverId },
-            moods: user?.user_mood || "Unknown",
-            relation: result?.relation || "Unknown",
             textPrompt: messages,
             userId: receiverId,
+            speakerId: userId,
+            owner_name: result?.message?.reciver?.name,
+            speaker_name: result?.message?.sender?.name,
           });
 
           // Emit the AI-generated response to both sender and receiver

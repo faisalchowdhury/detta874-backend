@@ -1,7 +1,13 @@
 import mongoose from "mongoose";
 import { PineconeCollections, TVectorMatch } from "../../DB/pinecone";
 import { embedding } from "../../utils/openAIClient";
+import { Friends } from "../friends/friends.model";
 import { logger } from "../../logger/logger";
+import {
+  detectRelationQuery,
+  normaliseRelationType,
+  TRelationType,
+} from "./relationship.lexicon";
 import {
   AssistantMemories,
   MEMORY_TYPES,
@@ -41,6 +47,10 @@ export type TRetrievedMemory = {
   score: number;
   created_at: string;
 };
+
+/** First token of a name, for matching "Olivia" against "Olivia Carter". */
+const firstName = (name: string) =>
+  name.trim().split(/\s+/)[0]?.toLowerCase() ?? "";
 
 const normalise = (text: string) =>
   text.toLowerCase().replace(/\s+/g, " ").trim();
@@ -167,6 +177,8 @@ export type TMemoryCandidate = {
   importance?: number;
   confidence?: number;
   entities?: string[];
+  relation_type?: string | null;
+  person_name?: string | null;
   event_date?: string | null;
   is_correction?: boolean;
   corrects_memory_id?: string | null;
@@ -247,6 +259,24 @@ const upsertMemories = async ({
       const entities = Array.isArray(candidate.entities)
         ? candidate.entities.filter((e) => typeof e === "string").slice(0, 12)
         : [];
+      // Only relationship/person memories carry a relation; anything else
+      // would pollute the deterministic family-fact lookup.
+      const isPersonMemory =
+        memoryType === "relationship" || memoryType === "person";
+      const rawName = candidate.person_name?.trim() || "";
+      // A relation word is not a name. The extractor sometimes returns "Dad",
+      // "Grandma" or "father" as person_name, which would make the structured
+      // lookup answer "who are your sons" with the word "son".
+      const nameIsRelationWord =
+        Boolean(rawName) && normaliseRelationType(rawName) !== "other";
+      const hasRealName = Boolean(rawName) && !nameIsRelationWord;
+
+      const relationType =
+        isPersonMemory && candidate.relation_type && hasRealName
+          ? normaliseRelationType(candidate.relation_type)
+          : null;
+      const personName = relationType && hasRealName ? rawName : null;
+
       const eventDate = candidate.event_date
         ? new Date(candidate.event_date)
         : null;
@@ -282,6 +312,8 @@ const upsertMemories = async ({
           memory_type: memoryType,
           canonical_text: canonicalText,
           entities,
+          relation_type: relationType,
+          person_name: personName,
           event_date: validEventDate,
           importance: Math.max(importance, 0.6),
           confidence: Math.max(confidence, 0.7),
@@ -333,6 +365,9 @@ const upsertMemories = async ({
           existing.importance = Math.max(existing.importance, importance);
           existing.confidence = Math.max(existing.confidence, confidence);
           existing.event_date = existing.event_date || validEventDate;
+          // Backfill structured fields onto rows stored before they existed.
+          existing.relation_type = existing.relation_type || relationType;
+          existing.person_name = existing.person_name || personName;
           await existing.save();
 
           if (keepsNewText) {
@@ -379,6 +414,8 @@ const upsertMemories = async ({
         memory_type: memoryType,
         canonical_text: canonicalText,
         entities,
+        relation_type: relationType,
+        person_name: personName,
         event_date: validEventDate,
         importance,
         confidence,
@@ -412,8 +449,194 @@ const upsertMemories = async ({
   return outcomes;
 };
 
+export type TStructuredFact = {
+  id: string;
+  relation_type: string | null;
+  person_name: string | null;
+  canonical_text: string;
+  origin: "memory" | "connection";
+  confidence: number;
+};
+
+export type TStructuredFacts = {
+  /** Relation types the question asked about; empty when it asked about none. */
+  asked: TRelationType[];
+  /** Records whose stored relation matches what was asked. */
+  matched: TStructuredFact[];
+  /**
+   * People known to be related to the user whose relation was never recorded.
+   * Surfaced separately so the model can use them without mistaking them for a
+   * confirmed answer to the question.
+   */
+  unclassified: TStructuredFact[];
+};
+
+const EMPTY_FACTS: TStructuredFacts = { asked: [], matched: [], unclassified: [] };
+
+/**
+ * Deterministic lookup of relationship facts for one user.
+ *
+ * This is a direct MongoDB query by relation, never a vector search. Semantic
+ * similarity returned family facts inconsistently between identical requests -
+ * a question about sons would surface a grief memory one time and the right
+ * record the next - so stable relationship facts are resolved structurally and
+ * the semantic store is only additional context.
+ *
+ * Two sources are merged: relationship memories extracted from journals and
+ * conversations, and accepted connections in the `friends` collection, where
+ * `relation` is what `sendBy` is to `reciveBy`.
+ *
+ * Pass `types: null` for every relationship fact on record, which is what the
+ * "tell me about yourself" path needs.
+ */
+const getRelationshipFacts = async ({
+  userId,
+  types,
+}: {
+  userId: string;
+  types?: TRelationType[] | null;
+}): Promise<TStructuredFacts> => {
+  if (!userId) return EMPTY_FACTS;
+  const asked = types === null ? [] : (types ?? []);
+  if (types !== null && !asked.length) return EMPTY_FACTS;
+
+  try {
+    const owner = new mongoose.Types.ObjectId(userId);
+    const relationFilter =
+      types === null ? {} : { relation_type: { $in: asked } };
+
+    const [matchedRows, unclassifiedRows, connections] = await Promise.all([
+      AssistantMemories.find({
+        user: owner,
+        isActive: true,
+        ...relationFilter,
+        ...(types === null ? { relation_type: { $ne: null } } : {}),
+      })
+        .sort({ confidence: -1, importance: -1 })
+        .limit(40)
+        .lean(),
+      AssistantMemories.find({
+        user: owner,
+        isActive: true,
+        relation_type: null,
+        memory_type: { $in: ["relationship", "person"] },
+      })
+        .sort({ confidence: -1, importance: -1 })
+        .limit(20)
+        .lean(),
+      Friends.find({ reciveBy: owner, status: "accepted" })
+        .populate("sendBy", "name")
+        .lean(),
+    ]);
+
+    const matched: TStructuredFact[] = matchedRows.map((row: any) => ({
+      id: row._id.toString(),
+      relation_type: row.relation_type ?? null,
+      person_name: row.person_name ?? null,
+      canonical_text: row.canonical_text,
+      origin: "memory",
+      confidence: row.confidence ?? 0.5,
+    }));
+
+    const connectionFacts: TStructuredFact[] = [];
+    /** First name -> relation, for resolving conflicts with extracted guesses. */
+    const connectionByName = new Map<string, TRelationType>();
+
+    for (const row of connections as any[]) {
+      const relation = normaliseRelationType(row?.relation);
+      const name = row?.sendBy?.name;
+      if (!name) continue;
+      connectionByName.set(firstName(name), relation);
+      if (types !== null && !asked.includes(relation)) continue;
+      connectionFacts.push({
+        id: row._id.toString(),
+        relation_type: relation,
+        person_name: name,
+        canonical_text: `${name} is the user's ${row.relation}.`,
+        origin: "connection",
+        // A confirmed in-app connection is the strongest evidence available.
+        confidence: 1,
+      });
+    }
+
+    /**
+     * A confirmed connection outranks an extracted guess for the same person.
+     * The extractor sometimes labels a relative it was never told about as a
+     * "friend" - Olivia is Emma's sister in the friends collection, but a
+     * journal entry that only names her produced a "friend" memory. Without
+     * this the model would be handed both and could answer either.
+     */
+    const deduped = matched.filter((fact) => {
+      if (!fact.person_name) return true;
+      // Any person with a confirmed connection is already covered by it, under
+      // their full name and correct relation. Dropping the extracted row avoids
+      // both the wrong relation and listing the same person twice.
+      return !connectionByName.has(firstName(fact.person_name));
+    });
+
+    return {
+      asked,
+      matched: [...connectionFacts, ...deduped],
+      unclassified: unclassifiedRows.map((row: any) => ({
+        id: row._id.toString(),
+        relation_type: null,
+        person_name: row.person_name ?? null,
+        canonical_text: row.canonical_text,
+        origin: "memory",
+        confidence: row.confidence ?? 0.5,
+      })),
+    };
+  } catch (err) {
+    logger.error("getRelationshipFacts failed", err);
+    return { asked, matched: [], unclassified: [] };
+  }
+};
+
+/** Convenience wrapper: detect the relation terms in a question, then look them up. */
+const retrieveStructuredFacts = async ({
+  userId,
+  queryText,
+}: {
+  userId: string;
+  queryText: string;
+}): Promise<TStructuredFacts> =>
+  getRelationshipFacts({ userId, types: detectRelationQuery(queryText) });
+
+/** Highest-value memories regardless of the question, for self-description. */
+const getProfileMemories = async ({
+  userId,
+  limit = 12,
+}: {
+  userId: string;
+  limit?: number;
+}): Promise<TRetrievedMemory[]> => {
+  try {
+    const rows = await AssistantMemories.find({
+      user: new mongoose.Types.ObjectId(userId),
+      isActive: true,
+    })
+      .sort({ importance: -1, confidence: -1, updatedAt: -1 })
+      .limit(limit)
+      .lean();
+
+    return rows.map((row: any) => ({
+      id: row._id.toString(),
+      canonical_text: row.canonical_text,
+      source_type: row.source_type,
+      score: 1,
+      created_at: row.createdAt ? new Date(row.createdAt).toISOString() : "",
+    }));
+  } catch (err) {
+    logger.error("getProfileMemories failed", err);
+    return [];
+  }
+};
+
 export const AssistantMemoryService = {
   retrieveMemories,
   upsertMemories,
   supersede,
+  getRelationshipFacts,
+  retrieveStructuredFacts,
+  getProfileMemories,
 };
