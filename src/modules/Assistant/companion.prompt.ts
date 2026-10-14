@@ -1,4 +1,6 @@
 import OpenAI from "openai";
+import { TStructuredFacts } from "./assistantMemory.service";
+import { renderStructuredFacts } from "./twin.prompt";
 
 /**
  * Bump this whenever COMPANION_SYSTEM_PROMPT or the context assembly changes.
@@ -42,6 +44,8 @@ Use remembered information naturally; do not say "according to your memory," "yo
 TRUTHFULNESS ABOUT MEMORY
 Never invent a memory, conversation, relationship, date, event, preference, or quote. If the requested detail is not present in RECENT_CONVERSATION or supplied memories, say naturally that you do not remember or are not sure, then ask the user if appropriate.
 The absence of a memory is not permission to guess.
+Never state a person's name that does not appear in the supplied context. If you are asked who someone is - a son, daughter, parent, spouse, sibling, friend - and that person is not in STRUCTURED_FACTS or the supplied memories, say you do not know. A plausible-sounding name is a serious error, worse than admitting you are unsure.
+STRUCTURED_FACTS, when present, is the authoritative answer for relationship and profile questions. Prefer it over anything you infer from memories or conversation.
 If two memories conflict, do not silently choose one. Prefer the newest explicit correction or ask for clarification.
 If the user corrects you, acknowledge the correction briefly and use the corrected information from that point on.
 
@@ -85,6 +89,8 @@ export const buildCompanionMessages = ({
   summary,
   memories,
   journalMemories,
+  structuredFacts,
+  profileBlock,
   currentMessage,
 }: {
   userName: string;
@@ -93,6 +99,8 @@ export const buildCompanionMessages = ({
   summary: string | null;
   memories: TPromptMemory[];
   journalMemories: TPromptMemory[];
+  structuredFacts?: TStructuredFacts;
+  profileBlock?: string | null;
   currentMessage: string;
 }): OpenAI.Chat.Completions.ChatCompletionMessageParam[] => {
   const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
@@ -108,6 +116,20 @@ export const buildCompanionMessages = ({
     messages.push({
       role: "system",
       content: `CONVERSATION_SUMMARY (older turns of this same conversation):\n${summary}`,
+    });
+  }
+
+  // Account profile fields answer a direct question about them authoritatively.
+  if (profileBlock) {
+    messages.push({ role: "system", content: profileBlock });
+  }
+
+  // Structured relationship facts come before the semantic blocks: family and
+  // profile facts are resolved by direct lookup, not by similarity.
+  if (structuredFacts?.asked.length) {
+    messages.push({
+      role: "system",
+      content: renderStructuredFacts(structuredFacts),
     });
   }
 

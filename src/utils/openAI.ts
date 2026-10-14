@@ -1,5 +1,3 @@
-import { TModes } from "../modules/user/user.interface";
-import { TRelation } from "../modules/friends/friends.interface";
 import { PineconeCollections } from "../DB/pinecone";
 import redisClient from "./Redis";
 import { logger } from "../logger/logger";
@@ -7,6 +5,21 @@ import mongoose from "mongoose";
 import { openai, embedding } from "./openAIClient";
 import { safeJsonParse } from "./safeJson";
 import { CompanionService } from "../modules/Assistant/companion.service";
+import {
+  TwinIdentity,
+  renderProfileFacts,
+} from "../modules/Assistant/twin.identity";
+import { AssistantMemoryService } from "../modules/Assistant/assistantMemory.service";
+import {
+  detectProfileQuery,
+  isSelfDescriptionQuery,
+} from "../modules/Assistant/relationship.lexicon";
+import {
+  buildTwinMessages,
+  renderAboutOwner,
+  TWIN_PROMPT_VERSION,
+} from "../modules/Assistant/twin.prompt";
+import { logTwinRequest } from "../modules/Assistant/companion.trace";
 
 const chatWithAI = async (context: any, question: string) => {
   const response = await openai.chat.completions.create({
@@ -41,27 +54,75 @@ const enhanceWithAI = async (content: string) => {
 
   return response;
 };
+/**
+ * Generates one Twin reply: the AI answering in the voice of the Twin owner.
+ *
+ * The owner is the person whose AI mode is on (the message receiver); the
+ * speaker is whoever sent the message. See twin.identity.ts for why those are
+ * resolved explicitly rather than passed as pre-paired names.
+ */
 const genarateAiResponses = async ({
   chatQuery,
   journalQuery,
   textPrompt,
-  moods,
-  relation,
   recentMessage,
   userId,
-  sender_name,
-  receiver_name,
+  speakerId,
+  owner_name,
+  speaker_name,
 }: {
   chatQuery: any;
   journalQuery: any;
   recentMessage: any;
   textPrompt: string;
-  moods: TModes;
-  relation: TRelation;
+  /** The Twin owner - whose memories are in scope and whose voice is used. */
   userId: string;
-  sender_name: string;
-  receiver_name: string;
+  /** The person currently talking to the Twin. */
+  speakerId: string;
+  owner_name?: string;
+  speaker_name?: string;
 }) => {
+  const ownerId = userId?.toString();
+
+  // Identities and structured facts are resolved before any semantic lookup:
+  // stable relationship facts must not depend on cosine similarity.
+  const [identities, structuredFacts] = await Promise.all([
+    TwinIdentity.resolveTwinIdentities({
+      ownerId,
+      speakerId: speakerId?.toString(),
+      ownerNameHint: owner_name,
+      speakerNameHint: speaker_name,
+    }),
+    AssistantMemoryService.retrieveStructuredFacts({
+      userId: ownerId,
+      queryText: textPrompt,
+    }),
+  ]);
+
+  // A direct question about a stored profile field is answered from the
+  // account, not from semantic recall.
+  const profileAsked = detectProfileQuery(textPrompt);
+  const profileBlock = profileAsked.length
+    ? renderProfileFacts(identities.owner.profileFacts, "Your")
+    : null;
+
+  // "Tell me about yourself" is answered from verified material only.
+  let aboutOwner: string | null = null;
+  if (isSelfDescriptionQuery(textPrompt)) {
+    const [allRelationships, profileMemories] = await Promise.all([
+      AssistantMemoryService.getRelationshipFacts({
+        userId: ownerId,
+        types: null,
+      }),
+      AssistantMemoryService.getProfileMemories({ userId: ownerId }),
+    ]);
+    aboutOwner = renderAboutOwner({
+      identities,
+      relationshipFacts: allRelationships,
+      profileMemories,
+    });
+  }
+
   // One embedding of the incoming message drives all three lookups. It must
   // come from the same model that wrote the stored vectors - see the warning in
   // src/DB/pinecone.ts.
@@ -71,7 +132,7 @@ const genarateAiResponses = async ({
     PineconeCollections.queryByVector(PineconeCollections.memoryCollection, {
       vector: queryVector,
       topK: 10,
-      filter: { user: userId?.toString() },
+      filter: { user: ownerId },
     }).catch((err) => {
       logger.error("assistant memory lookup failed", err);
       return [];
@@ -94,17 +155,16 @@ const genarateAiResponses = async ({
     }),
   ]);
 
-  const assistantOldChatsSummaries = assistantHits.map((res) => ({
-    assistantChatsSummaries:
-      res.metadata?.canonical_text || res.metadata?.summaries || "",
+  const memoryContext = assistantHits.map((res) => ({
+    memory: res.metadata?.canonical_text || res.metadata?.summaries || "",
     time: res.metadata?.createdAt,
   }));
 
-  // Format chat history as the two participants' names
+  // Label each past message with who actually said it.
   const chatContext = chatHits.map((res) => {
-    const isCurrentUser = res.metadata?.senderId === userId?.toString();
+    const fromOwner = res.metadata?.senderId === ownerId;
     return {
-      [isCurrentUser ? sender_name : receiver_name]:
+      [fromOwner ? identities.owner.name : identities.speaker.name]:
         res.metadata?.chat || res.metadata?.message || "",
       time: res.metadata?.createdAt,
     };
@@ -116,86 +176,35 @@ const genarateAiResponses = async ({
     createdAt: res.metadata?.createdAt,
   }));
 
+  logTwinRequest({
+    ownerId,
+    speakerId: speakerId?.toString(),
+    promptVersion: TWIN_PROMPT_VERSION,
+    relationship: identities.relationship,
+    structuredAsked: structuredFacts.asked,
+    structuredMatched: structuredFacts.matched.map((f) => f.id),
+    profileAsked,
+    selfDescription: Boolean(aboutOwner),
+    memoryIds: assistantHits.map((h) => h.id),
+    journalMemoryIds: journalHits.map((h) => h.id),
+  });
+
   const response = await openai.chat.completions.create({
-    model: "gpt-4o",
-    messages: [
-      {
-        role: "system",
-        content: `
-You are ${sender_name}, texting ${receiver_name} (your ${relation}). Mood right now: ${moods}
-
-**Text like the real ${sender_name} would—sloppy, emotional, relationship-driven.**
-
-**Context:** Recent messages first → old chats → journal → assistant summaries. Check timestamps.
-
-**Real texting rules:**
-
-**Length:**
-- 60% = 1 sentence/emoji/phrase
-- 30% = 2-3 sentences
-- 10% = emotional pour when needed
-Match their energy exactly.
-
-**Voice:**
-- "gonna/wanna/u/ur/thru/cuz" naturally
-- Fragments. Typos. CAPS FOR EMPHASIS.
-- Your age/no slang .
-
-**Dont use any emojis
-
-**Tone shifts:**
-- Casual → chill
-- Urgent → sharp/direct
-- Emotional → raw empathy
-- Teasing → playful shorthand
-
-**${sender_name} to ${receiver_name} vibe:**
-- Friends: inside jokes, quick hits
-- Family: warm check-ins
-- Romantic: flirty warmth
-- Show through tone, not "bro/dear" spam
-
-**Questions:** 5% chance max. Only if lost.
-
-**NEVER sound like:**
-- Polished paragraphs
-- AI politeness
-- "As your friend..."
-- Lists or formatting
-- Emojis only when perfect.
-
-**Never invent a memory, event, or detail that is not in the context below. If you do not know something, do not guess.
-
-**Last check:** Would ${sender_name} actually text this to ${receiver_name}?
-
-        `,
-      },
-      {
-        role: "user",
-        content: `
-CONTEXT (prioritized):
-
-[RECENT MESSAGES - use first]
-${JSON.stringify(recentMessage, null, 2)}
-
-[OLDER CHAT - if recent doesn't help]
-${JSON.stringify(chatContext, null, 2)}
-
-[JOURNAL - tone/facts only]
-${JSON.stringify(journalContext, null, 2)}
-
-[ASSISTANT SUMMARIES - background]
-${JSON.stringify(assistantOldChatsSummaries, null, 2)}
-
----
-
-CURRENT MESSAGE TO REPLY TO: ${textPrompt}
-
----
-
-Reply now as ${sender_name}:`,
-      },
-    ],
+    model: process.env.TWIN_MODEL || "gpt-4o",
+    temperature: 0.8,
+    presence_penalty: 0.3,
+    frequency_penalty: 0.3,
+    messages: buildTwinMessages({
+      identities,
+      structuredFacts,
+      profileBlock,
+      aboutOwner,
+      recentMessage,
+      chatContext,
+      journalContext,
+      memoryContext,
+      textPrompt,
+    }),
   });
 
   return response?.choices[0]?.message?.content;

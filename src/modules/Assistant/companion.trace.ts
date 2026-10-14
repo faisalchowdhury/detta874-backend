@@ -17,6 +17,8 @@ export type TCompanionTrace = {
   summaryUpdatedAt: string | null;
   memoryIds: string[];
   journalMemoryIds: string[];
+  structuredAsked: string[];
+  structuredMatched: string[];
   startedAt: number;
   windowSource: "redis" | "mongo";
 };
@@ -41,6 +43,8 @@ export const logCompanionRequest = (
     summary_updated_at: trace.summaryUpdatedAt,
     memory_ids: trace.memoryIds,
     journal_memory_ids: trace.journalMemoryIds,
+    structured_asked: trace.structuredAsked,
+    structured_matched: trace.structuredMatched,
     latency_ms: Date.now() - trace.startedAt,
     status: outcome.status,
     response_chars: outcome.responseChars ?? 0,
@@ -54,6 +58,43 @@ export const logCompanionRequest = (
       outcome.error,
     );
   }
+};
+
+/**
+ * Diagnostic trace for one Twin reply.
+ *
+ * Records the three identities and which structured facts were supplied, so a
+ * reply that names the wrong person can be traced to the exact relationship row
+ * and memory ids the model was given.
+ */
+export const logTwinRequest = (trace: {
+  ownerId: string;
+  speakerId: string;
+  promptVersion: string;
+  relationship: { speakerToOwner: string | null; ownerToSpeaker: string | null };
+  structuredAsked: string[];
+  structuredMatched: string[];
+  profileAsked: string[];
+  selfDescription: boolean;
+  memoryIds: string[];
+  journalMemoryIds: string[];
+}) => {
+  logger.info(
+    `twin.request ${JSON.stringify({
+      event: "twin.request",
+      owner_id: trace.ownerId,
+      speaker_id: trace.speakerId,
+      prompt_version: trace.promptVersion,
+      speaker_to_owner: trace.relationship.speakerToOwner,
+      owner_to_speaker: trace.relationship.ownerToSpeaker,
+      structured_asked: trace.structuredAsked,
+      structured_matched: trace.structuredMatched,
+      profile_asked: trace.profileAsked,
+      self_description: trace.selfDescription,
+      memory_ids: trace.memoryIds,
+      journal_memory_ids: trace.journalMemoryIds,
+    })}`,
+  );
 };
 
 /** Logged after the asynchronous memory-extraction pass (spec section 17). */

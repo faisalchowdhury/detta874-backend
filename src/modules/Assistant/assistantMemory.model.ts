@@ -1,4 +1,5 @@
 import mongoose, { model, Schema } from "mongoose";
+import { RELATION_TYPES, TRelationType } from "./relationship.lexicon";
 
 /** Spec section 7.2 - source of a memory record. */
 export type TMemorySource = "companion_chat" | "journal" | "profile" | "import";
@@ -34,6 +35,13 @@ export type TAssistantMemory = {
   memory_type: TMemoryType;
   canonical_text: string;
   entities: string[];
+  /**
+   * Structured relationship fields. Set for `relationship` / `person`
+   * memories so family facts can be looked up by relation instead of by
+   * semantic similarity, which recalled them inconsistently.
+   */
+  relation_type: TRelationType | null;
+  person_name: string | null;
   event_date: Date | null;
   importance: number;
   confidence: number;
@@ -83,6 +91,17 @@ const assistantMemorySchema = new Schema<TAssistantMemory>(
       type: [String],
       default: [],
     },
+    relation_type: {
+      type: String,
+      enum: [...RELATION_TYPES, null],
+      default: null,
+      index: true,
+    },
+    person_name: {
+      type: String,
+      default: null,
+      trim: true,
+    },
     event_date: {
       type: Date,
       default: null,
@@ -128,6 +147,8 @@ const assistantMemorySchema = new Schema<TAssistantMemory>(
 );
 
 assistantMemorySchema.index({ user: 1, isActive: 1, source_type: 1 });
+// Drives the deterministic family-fact lookup.
+assistantMemorySchema.index({ user: 1, isActive: 1, relation_type: 1 });
 
 export const AssistantMemories = model<TAssistantMemory>(
   "assistantMemories",
