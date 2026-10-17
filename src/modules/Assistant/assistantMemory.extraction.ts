@@ -25,6 +25,7 @@ Return exactly one valid JSON object and nothing else. It must be parseable by J
       "entities": ["..."],
       "relation_type": null or one of "mother" "father" "parent" "son" "daughter" "child" "brother" "sister" "sibling" "spouse" "partner" "grandmother" "grandfather" "grandparent" "grandson" "granddaughter" "grandchild" "aunt" "uncle" "cousin" "nephew" "niece" "mother-in-law" "father-in-law" "brother-in-law" "sister-in-law" "stepmother" "stepfather" "stepbrother" "stepsister" "stepson" "stepdaughter" "friend" "pet" "other",
       "person_name": null or the person's name,
+      "provenance": "user_stated" or "ai_inferred",
       "event_date": null or "YYYY-MM-DD",
       "is_correction": boolean,
       "corrects_memory_id": null or an id from EXISTING_MEMORIES
@@ -49,6 +50,13 @@ person_name set to just that person's name.
   related, it is not a relationship memory.
 - Leave relation_type and person_name null for every memory that is not about a
   named person's relationship to the user.
+
+PROVENANCE
+Set "provenance" to "user_stated" when the memory restates something the user
+actually said. Set it to "ai_inferred" when it is your interpretation, a
+conclusion drawn across several messages, or a guess about what they meant. A
+user-stated fact outranks an inferred one later, so do not mark an inference as
+user-stated.
 
 WHAT TO SAVE
 - Stable personal facts: family, close friends, occupation, important places, significant dates, recurring goals.

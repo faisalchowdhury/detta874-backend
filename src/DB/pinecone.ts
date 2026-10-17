@@ -156,6 +156,9 @@ type TSaveMemory = {
   entities: string[];
   eventDate?: string | null;
   createdAt?: string;
+  relationType?: string | null;
+  personName?: string | null;
+  provenance?: string;
 };
 
 /**
@@ -176,6 +179,9 @@ const saveMemory = async ({
   entities,
   eventDate,
   createdAt,
+  relationType,
+  personName,
+  provenance,
 }: TSaveMemory) => {
   const metadata: RecordMetadata = {
     user: userId?.toString(),
@@ -194,6 +200,17 @@ const saveMemory = async ({
   }
   if (eventDate) {
     metadata.event_date = eventDate;
+  }
+  // Tagging required by the Natural Conversation Guide so retrieval can hand
+  // the model provenance and relationship without a second round trip.
+  if (relationType) {
+    metadata.relation_type = relationType;
+  }
+  if (personName) {
+    metadata.person_name = personName;
+  }
+  if (provenance) {
+    metadata.provenance = provenance;
   }
 
   await memoryCollection.upsert([{ id, values: vector, metadata }]);

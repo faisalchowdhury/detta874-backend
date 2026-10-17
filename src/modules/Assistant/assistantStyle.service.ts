@@ -37,6 +37,24 @@ const EMOTION = [
   "lonely", "scared", "proud", "excited", "overwhelmed", "exhausted",
 ];
 
+const HEDGES = [
+  "maybe",
+  "i think",
+  "i guess",
+  "sort of",
+  "kind of",
+  "perhaps",
+  "probably",
+  "not sure",
+  "i suppose",
+  "possibly",
+  "might",
+];
+
+/** Common emoji planes plus the misc-symbol and dingbat ranges. */
+const EMOJI =
+  /[\u{1F300}-\u{1FAFF}\u{1F900}-\u{1F9FF}\u{2600}-\u{27BF}\u{FE0F}]/gu;
+
 const clamp01 = (n: number) => Math.min(1, Math.max(0, n));
 
 const countHits = (haystack: string, needles: string[]) =>
@@ -105,6 +123,24 @@ export const readStyleSignals = (
   if (emotionHits > 0) signals.emotional_directness = 1;
   else if (substantial) signals.emotional_directness = 0;
 
+  // Emoji use, so the Companion can mirror a user who never uses them
+  // (Natural Conversation Guide 8).
+  const emojiHits = (trimmed.match(EMOJI) || []).length;
+  signals.emoji_frequency = clamp01(emojiHits / 2);
+
+  // Directness: short, declarative, hedge-free messages read as blunt.
+  if (wordCount >= 3) {
+    const hedges = countHits(lower, HEDGES);
+    let directness = 0.5;
+    if (hedges > 0) directness -= 0.25;
+    if (wordCount <= 8) directness += 0.2;
+    if (/^(no|yes|yep|nope|nah|yeah|stop|do it|just )/.test(lower)) {
+      directness += 0.2;
+    }
+    if (wordCount > 40) directness -= 0.1;
+    signals.directness = clamp01(directness);
+  }
+
   return signals;
 };
 
@@ -172,6 +208,12 @@ const observeUserMessage = async (userId: string, text: string) => {
 
 const round = (n: number) => Math.round(n * 100) / 100;
 
+const LOW_HIGH: [string, string, string] = ["low", "medium", "high"];
+
+/** Buckets a 0-1 trait into the three labels the guide uses. */
+const band = (value: number, labels: [string, string, string]) =>
+  value < 0.34 ? labels[0] : value < 0.67 ? labels[1] : labels[2];
+
 /** The compact profile block sent to the model (spec section 4.1 / 10). */
 const getCompactProfile = async (userId: string) => {
   let doc: TLeanStyleDoc | null = null;
@@ -183,15 +225,37 @@ const getCompactProfile = async (userId: string) => {
     logger.warn(`getCompactProfile failed for user ${userId}`, err);
   }
 
-  const profile: TCompactStyleProfile = {
-    user_id: userId,
-    messages_observed: doc?.messages_observed || 0,
-  };
+  const traits = Object.fromEntries(
+    STYLE_TRAITS.map((key) => [key, readTrait(doc, key)]),
+  ) as Record<TStyleTraitKey, TStyleTrait>;
 
-  for (const key of STYLE_TRAITS) {
-    const t = readTrait(doc, key);
-    profile[key] = { value: round(t.value), confidence: round(t.confidence) };
-  }
+  const confidences = STYLE_TRAITS.map((key) => traits[key].confidence);
+  const overallConfidence =
+    confidences.reduce((sum, c) => sum + c, 0) / confidences.length;
+
+  // Shape follows Natural Conversation Guide section 8: categorical labels
+  // where a band is more useful to the model than a decimal, numbers where the
+  // guide shows numbers.
+  const profile: TCompactStyleProfile = {
+    response_length: band(traits.response_length.value, [
+      "short",
+      "medium",
+      "long",
+    ]),
+    formality: band(traits.formality.value, ["casual", "neutral", "formal"]),
+    slang_level: round(traits.slang.value),
+    profanity_comfort: round(traits.profanity_tolerance.value),
+    humor: round(traits.humor.value),
+    question_frequency_preference: band(traits.question_frequency.value, LOW_HIGH),
+    emoji_frequency: band(traits.emoji_frequency.value, LOW_HIGH),
+    directness: band(traits.directness.value, LOW_HIGH),
+    confidence: round(overallConfidence),
+    samples_observed: doc?.messages_observed || 0,
+    // Retained alongside the guide's fields - still useful to the model.
+    advice_preference: round(traits.advice_preference.value),
+    emotional_openness: round(traits.emotional_directness.value),
+    storytelling: round(traits.storytelling_preference.value),
+  };
 
   return profile;
 };

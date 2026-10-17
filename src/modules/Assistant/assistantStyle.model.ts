@@ -17,6 +17,8 @@ export const STYLE_TRAITS = [
   "advice_preference",
   "emotional_directness",
   "storytelling_preference",
+  "directness",
+  "emoji_frequency",
 ] as const;
 
 export type TStyleTraitKey = (typeof STYLE_TRAITS)[number];
@@ -36,6 +38,8 @@ export const DEFAULT_TRAIT_VALUES: Record<TStyleTraitKey, number> = {
   advice_preference: 0.4,
   emotional_directness: 0.4,
   storytelling_preference: 0.4,
+  directness: 0.5,
+  emoji_frequency: 0.2,
 };
 
 export type TAssistantStyleProfile = {
@@ -49,6 +53,8 @@ export type TAssistantStyleProfile = {
   advice_preference: TStyleTrait;
   emotional_directness: TStyleTrait;
   storytelling_preference: TStyleTrait;
+  directness: TStyleTrait;
+  emoji_frequency: TStyleTrait;
   messages_observed: number;
 };
 
@@ -84,6 +90,8 @@ const assistantStyleSchema = new Schema<TAssistantStyleProfile>(
     storytelling_preference: trait(
       DEFAULT_TRAIT_VALUES.storytelling_preference,
     ),
+    directness: trait(DEFAULT_TRAIT_VALUES.directness),
+    emoji_frequency: trait(DEFAULT_TRAIT_VALUES.emoji_frequency),
     messages_observed: {
       type: Number,
       default: 0,
