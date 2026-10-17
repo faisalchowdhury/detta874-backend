@@ -14,6 +14,7 @@ import { AssistantMemoryService } from "./assistantMemory.service";
 import { extractMemories } from "./assistantMemory.extraction";
 import { AssistantStyleService } from "./assistantStyle.service";
 import { detectProfileQuery } from "./relationship.lexicon";
+import { detectActiveEntities } from "./companion.entities";
 import { TwinIdentity, renderProfileFacts } from "./twin.identity";
 import { logCompanionRequest, logMemoryExtraction } from "./companion.trace";
 
@@ -167,7 +168,7 @@ const companionReply = async ({
   const recent = toTurns(storedTurns);
 
   // 4-6. Summary, memories scoped to this user, and the learned style profile.
-  const [summary, retrieved, styleProfile, structuredFacts] =
+  const [summary, retrieved, styleProfile, structuredFacts, activeEntities] =
     await Promise.all([
       CompanionWindow.getSummary(userId),
       AssistantMemoryService.retrieveMemories({
@@ -181,6 +182,9 @@ const companionReply = async ({
         userId,
         queryText: textPrompt,
       }),
+      // Topic/people/place/time for this turn. Runs alongside retrieval rather
+      // than before it, so it costs almost nothing in wall-clock time.
+      detectActiveEntities({ recent, currentMessage: textPrompt }),
     ]);
 
   // Account fields are authoritative for a direct question about them.
@@ -201,6 +205,8 @@ const companionReply = async ({
     journalMemoryIds: retrieved.journal.map((m) => m.id),
     structuredAsked: structuredFacts.asked,
     structuredMatched: structuredFacts.matched.map((f) => f.id),
+    activeTopic: activeEntities?.topic ?? null,
+    activeTimeExpression: activeEntities?.time_expression ?? null,
     startedAt,
     windowSource,
   };
@@ -218,6 +224,7 @@ const companionReply = async ({
       journalMemories: retrieved.journal,
       structuredFacts,
       profileBlock,
+      activeEntities,
       currentMessage: textPrompt,
     });
 

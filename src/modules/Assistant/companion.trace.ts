@@ -19,6 +19,8 @@ export type TCompanionTrace = {
   journalMemoryIds: string[];
   structuredAsked: string[];
   structuredMatched: string[];
+  activeTopic: string | null;
+  activeTimeExpression: string | null;
   startedAt: number;
   windowSource: "redis" | "mongo";
 };
@@ -45,6 +47,8 @@ export const logCompanionRequest = (
     journal_memory_ids: trace.journalMemoryIds,
     structured_asked: trace.structuredAsked,
     structured_matched: trace.structuredMatched,
+    active_topic: trace.activeTopic,
+    active_time_expression: trace.activeTimeExpression,
     latency_ms: Date.now() - trace.startedAt,
     status: outcome.status,
     response_chars: outcome.responseChars ?? 0,
