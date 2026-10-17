@@ -42,6 +42,11 @@ export type TAssistantMemory = {
    */
   relation_type: TRelationType | null;
   person_name: string | null;
+  /**
+   * Whether the user stated this themselves or it is an interpretation.
+   * User-stated facts outrank generated summaries when they conflict.
+   */
+  provenance: "user_stated" | "ai_inferred";
   event_date: Date | null;
   importance: number;
   confidence: number;
@@ -101,6 +106,11 @@ const assistantMemorySchema = new Schema<TAssistantMemory>(
       type: String,
       default: null,
       trim: true,
+    },
+    provenance: {
+      type: String,
+      enum: ["user_stated", "ai_inferred"],
+      default: "user_stated",
     },
     event_date: {
       type: Date,

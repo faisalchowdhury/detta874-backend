@@ -38,7 +38,7 @@ export const MIN_CONFIDENCE = num(
   0.6,
 );
 /** Spec section 11.1 retrieves at most 8 memories per request. */
-export const MEMORY_LIMIT = num(process.env.COMPANION_MEMORY_LIMIT, 8);
+export const MEMORY_LIMIT = num(process.env.COMPANION_MEMORY_LIMIT, 6);
 
 export type TRetrievedMemory = {
   id: string;
@@ -46,6 +46,12 @@ export type TRetrievedMemory = {
   source_type: TMemorySource;
   score: number;
   created_at: string;
+  /** Tags required by Natural Conversation Guide 7.4. */
+  event_date?: string | null;
+  people?: string[];
+  relation_type?: string | null;
+  confidence?: number;
+  provenance?: string;
 };
 
 /** First token of a name, for matching "Olivia" against "Olivia Carter". */
@@ -64,12 +70,26 @@ const normalise = (text: string) =>
 const fromUnifiedMatch = (match: TVectorMatch): TRetrievedMemory | null => {
   const text = match.metadata?.canonical_text || match.metadata?.summaries;
   if (!text || typeof text !== "string") return null;
+  const isLegacySummary = !match.metadata?.canonical_text;
   return {
     id: match.id,
     canonical_text: text,
-    source_type: (match.metadata?.source_type as TMemorySource) || "companion_chat",
+    source_type:
+      (match.metadata?.source_type as TMemorySource) || "companion_chat",
     score: match.score,
     created_at: match.metadata?.createdAt || "",
+    event_date: match.metadata?.event_date ?? null,
+    people: Array.isArray(match.metadata?.entities)
+      ? match.metadata?.entities
+      : undefined,
+    relation_type: match.metadata?.relation_type ?? null,
+    confidence:
+      typeof match.metadata?.confidence === "number"
+        ? match.metadata.confidence
+        : undefined,
+    // Records written before the unified store existed are AI summaries.
+    provenance:
+      match.metadata?.provenance || (isLegacySummary ? "ai_summary" : undefined),
   };
 };
 
@@ -83,6 +103,8 @@ const fromJournalMatch = (match: TVectorMatch): TRetrievedMemory | null => {
     source_type: "journal",
     score: match.score,
     created_at: match.metadata?.createdAt || "",
+    event_date: match.metadata?.event_date ?? null,
+    provenance: "user_stated",
   };
 };
 
@@ -179,6 +201,7 @@ export type TMemoryCandidate = {
   entities?: string[];
   relation_type?: string | null;
   person_name?: string | null;
+  provenance?: string | null;
   event_date?: string | null;
   is_correction?: boolean;
   corrects_memory_id?: string | null;
@@ -277,6 +300,9 @@ const upsertMemories = async ({
           : null;
       const personName = relationType && hasRealName ? rawName : null;
 
+      const provenance =
+        candidate.provenance === "ai_inferred" ? "ai_inferred" : "user_stated";
+
       const eventDate = candidate.event_date
         ? new Date(candidate.event_date)
         : null;
@@ -314,6 +340,7 @@ const upsertMemories = async ({
           entities,
           relation_type: relationType,
           person_name: personName,
+          provenance,
           event_date: validEventDate,
           importance: Math.max(importance, 0.6),
           confidence: Math.max(confidence, 0.7),
@@ -332,6 +359,9 @@ const upsertMemories = async ({
           privacyLevel: created.privacy_level,
           entities,
           eventDate: validEventDate ? validEventDate.toISOString() : null,
+          relationType,
+          personName,
+          provenance,
         });
         await supersede(correctionTargetId, created._id);
         outcomes.push({
@@ -416,6 +446,7 @@ const upsertMemories = async ({
         entities,
         relation_type: relationType,
         person_name: personName,
+        provenance,
         event_date: validEventDate,
         importance,
         confidence,
@@ -434,6 +465,9 @@ const upsertMemories = async ({
         privacyLevel: created.privacy_level,
         entities,
         eventDate: validEventDate ? validEventDate.toISOString() : null,
+        relationType,
+        personName,
+        provenance,
       });
 
       outcomes.push({
